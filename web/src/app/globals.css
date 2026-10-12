@@ -1,0 +1,43 @@
+@import url("https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Manrope:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* PlugDrop design system: shadcn tokens from PlugDrop-AI (frontend/src/index.css).
+   Primary uses pd-purple-deep (#6D28D9) so white button text meets 4.5:1;
+   pd-purple (#8B5CF6) stays the accent and focus ring. */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 3.1%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 3.1%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 3.1%;
+    --primary: 262 69% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 250 100% 97%;
+    --secondary-foreground: 258 60% 30%;
+    --muted: 250 30% 96%;
+    --muted-foreground: 240 5% 45%;
+    --accent: 250 100% 97%;
+    --accent-foreground: 258 60% 30%;
+    --destructive: 0 72% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 6% 90%;
+    --input: 240 6% 90%;
+    --ring: 258 90% 66%;
+    --radius: 0.75rem;
+  }
+  * { @apply border-border; }
+  html { -webkit-font-smoothing: antialiased; }
+  body { @apply bg-background text-foreground font-sans; }
+  ::selection { background-color: rgba(139, 92, 246, 0.25); color: #080808; }
+  h1, h2, h3 { @apply font-display tracking-tight; }
+}
+
+@layer utilities {
+  .eyebrow { @apply text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground; }
+  .tabular { font-variant-numeric: tabular-nums; }
+}
