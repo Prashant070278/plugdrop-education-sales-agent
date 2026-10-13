@@ -43,6 +43,7 @@ export interface Institution {
   notes: string | null; owner: UserRef | null; last_verified_at: string | null; is_demo: boolean;
   created_at: string; updated_at: string; campus_count: number; contact_count: number;
   lead_stage: LeadStage | null; suppressed: boolean; freshness: Freshness;
+  research_score: number | null; research_tier: string | null; last_researched_at: string | null;
 }
 export interface InstitutionDetail extends Institution { campuses: Campus[] }
 
@@ -78,6 +79,7 @@ export interface Activity {
 export interface Research {
   id: number; institution_id: number; contact_id: number | null; lead_id: number | null; category: string;
   summary: string; source_url: string | null; confidence: number; found_at: string; is_demo: boolean;
+  evidence_level: EvidenceLevel | null; excerpt: string | null; published_at: string | null;
 }
 
 export interface Task {
@@ -124,3 +126,67 @@ export interface SystemInfo {
   integrations: { key: string; name: string; description: string; status: "connected" | "not_configured" | "planned"; env_vars: string[] }[];
   demo_counts: Record<string, number>;
 }
+
+/* ---------- Stage 2: research agent ---------- */
+export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type EvidenceLevel = "verified_fact" | "source_inference" | "hypothesis";
+export type ReviewStatus = "pending" | "approved" | "rejected";
+
+export interface ResearchRunSummary {
+  id: number; job_id: number;
+  institution: { id: number; name: string; is_demo: boolean; research_score: number | null; research_tier: string | null; last_researched_at: string | null };
+  status: RunStatus; attempts: number; max_attempts: number; next_attempt_at: string; last_error: string | null;
+  started_at: string | null; finished_at: string | null; provider_calls: number; input_tokens: number; output_tokens: number;
+  cost_usd: string; score: number | null; tier: string | null; confidence: "low" | "medium" | "high" | null; pushed_at: string | null;
+}
+
+export interface ScoreComponent { label: string; weight: number; ratio: number; points: number; reasons: string[] }
+
+export interface ResearchEvidence {
+  id: number; kind: "profile" | "signal" | "use_case"; category: string; category_label: string; claim: string;
+  evidence_level: EvidenceLevel; confidence: number; excerpt: string | null; source_url: string | null; source_title: string | null;
+  published_at: string | null; retrieved_at: string | null; provider: string; review_status: ReviewStatus; review_note: string | null;
+  reviewed_at: string | null; pushed_at: string | null;
+}
+
+export interface ResearchCandidate {
+  id: number; first_name: string; last_name: string; full_name: string; designation: string | null; department: string | null;
+  buying_role: string | null; buying_role_label: string | null; email: string | null; email_status: "none" | "published" | "provider_verified";
+  phone: string | null; linkedin_url: string | null; verification_status: string; source_url: string; excerpt: string | null;
+  retrieved_at: string | null; provider: string; notes: string | null; existing_contact_id: number | null; review_status: ReviewStatus;
+  pushed_contact_id: number | null; pushed_at: string | null;
+}
+
+export interface ResearchRunDetail extends ResearchRunSummary {
+  score_breakdown: Record<"fit" | "problem" | "intent" | "access" | "quality", ScoreComponent>;
+  weights_used: Record<string, number>;
+  summary: {
+    fit_summary?: string; primary_use_case?: string | null; primary_use_case_label?: string | null; use_case_rationale?: string;
+    next_action?: string; missing_information?: { item: string; how_to_verify: string }[];
+    decision_makers?: { name: string; designation: string; buying_role_label: string; email_status: string }[];
+    profile_confirmed?: boolean; campus_count?: number | null; reasoner_model?: string | null; documents_reviewed?: number;
+  };
+  log: { at: string; event: string; [k: string]: unknown }[];
+  evidence: ResearchEvidence[]; candidates: ResearchCandidate[]; is_latest: boolean; is_stale: boolean;
+}
+
+export interface ResearchJob {
+  id: number; status: "queued" | "running" | "completed" | "partial" | "failed" | "cancelled"; label: string; provider: string;
+  reasoner: string; requested_by: UserRef | null; total_items: number; cost_usd: string; created_at: string;
+  started_at: string | null; finished_at: string | null; counts: Partial<Record<RunStatus, number>>;
+}
+export interface ResearchJobDetail extends ResearchJob { runs: ResearchRunSummary[] }
+
+export interface ResearchOverview {
+  provider: string; reasoner: string; model: string | null; worker: string; tiers: Record<"A" | "B" | "C" | "D", number>;
+  queued: number; running: number; stale: number; researched: number; pending_review: number;
+  spent_today_usd: number; daily_budget_usd: number; rerun_after_days: number;
+}
+
+export interface ResearchConfig {
+  weights: { fit: number; problem: number; intent: number; access: number; quality: number };
+  tiers: { A: number; B: number; C: number };
+  evidence_fresh_days: number; evidence_stale_days: number; rerun_after_days: number;
+}
+
+export interface InstitutionResearch { latest: ResearchRunSummary | null; result: ResearchRunDetail | null; history: ResearchRunSummary[] }

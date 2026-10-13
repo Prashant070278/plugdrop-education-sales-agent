@@ -168,6 +168,9 @@ class InstitutionOut(ORM):
     contact_count: int = 0
     lead_stage: LeadStage | None = None
     suppressed: bool = False
+    research_score: int | None = None
+    research_tier: str | None = None
+    last_researched_at: datetime | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -412,6 +415,9 @@ class ResearchOut(ORM):
     confidence: int
     found_at: datetime
     is_demo: bool
+    evidence_level: str | None = None
+    excerpt: str | None = None
+    published_at: datetime | None = None
 
 
 # ---------- tasks ----------

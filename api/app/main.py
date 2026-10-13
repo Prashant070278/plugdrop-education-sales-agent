@@ -20,6 +20,7 @@ from app.routers import (
     institutions,
     leads,
     opportunities,
+    research,
     settings,
     tasks,
     users,
@@ -61,6 +62,14 @@ async def validation_error(_: Request, exc: RequestValidationError) -> JSONRespo
     return JSONResponse(status_code=422, content={"detail": "Validation failed", "errors": errors})
 
 
+@app.on_event("startup")
+def _start_worker() -> None:
+    if get_settings().research_worker == "embedded":
+        from app.research.service import start_embedded_worker
+
+        start_embedded_worker(SessionLocal)
+
+
 @app.get("/api/health", tags=["system"])
 def health() -> dict[str, str]:
     with SessionLocal() as db:
@@ -75,6 +84,7 @@ for r in (
     contacts,
     leads,
     opportunities,
+    research,
     activities,
     tasks,
     campaigns,
