@@ -43,6 +43,21 @@ class Settings(BaseSettings):
     anthropic_input_usd_per_mtok: float = 3.0
     anthropic_output_usd_per_mtok: float = 15.0
 
+    # --- Stage 3: outreach agent ---
+    outreach_writer: str = "auto"  # "claude", "rules" or "auto" (claude when ANTHROPIC_API_KEY is set)
+    # Hard switch for real mailboxes (Gmail / Microsoft). While false, real providers only ever create
+    # drafts, whatever the admin policy says. The mock provider is unaffected.
+    outreach_external_sending_allowed: bool = False
+    outreach_mock_provider_enabled: bool = True
+    outreach_worker: str = "embedded"  # "embedded" (thread in the API), "external" or "off"
+    token_encryption_key: str | None = None  # Fernet key; required before any OAuth mailbox can be connected
+    oauth_redirect_base_url: str = "http://localhost:3000"
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
+    microsoft_client_id: str | None = None
+    microsoft_client_secret: str | None = None
+    microsoft_tenant: str = "organizations"
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

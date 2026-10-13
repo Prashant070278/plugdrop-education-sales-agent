@@ -185,6 +185,7 @@ class InstitutionDetail(InstitutionOut):
 # ---------- contacts ----------
 class ContactBase(BaseModel):
     institution_id: int
+    salutation: str | None = Field(None, max_length=30)
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field("", max_length=100)
     designation: str | None = Field(None, max_length=200)
@@ -195,10 +196,11 @@ class ContactBase(BaseModel):
     verification_status: VerificationStatus = VerificationStatus.unverified
     source: str | None = Field(None, max_length=200)
     last_verified_at: datetime | None = None
+    notes: str | None = Field(None, max_length=4000)
 
-    _blank = field_validator("designation", "department", "email", "phone", "linkedin_url", "source", mode="before")(
-        _blank_to_none
-    )
+    _blank = field_validator(
+        "salutation", "designation", "department", "email", "phone", "linkedin_url", "source", "notes", mode="before"
+    )(_blank_to_none)
 
     @field_validator("linkedin_url")
     @classmethod
@@ -214,6 +216,7 @@ class ContactCreate(ContactBase):
 
 class ContactUpdate(BaseModel):
     institution_id: int | None = None
+    salutation: str | None = Field(None, max_length=30)
     first_name: str | None = Field(None, min_length=1, max_length=100)
     last_name: str | None = Field(None, max_length=100)
     designation: str | None = Field(None, max_length=200)
@@ -224,10 +227,11 @@ class ContactUpdate(BaseModel):
     verification_status: VerificationStatus | None = None
     source: str | None = Field(None, max_length=200)
     last_verified_at: datetime | None = None
+    notes: str | None = Field(None, max_length=4000)
 
-    _blank = field_validator("designation", "department", "email", "phone", "linkedin_url", "source", mode="before")(
-        _blank_to_none
-    )
+    _blank = field_validator(
+        "salutation", "designation", "department", "email", "phone", "linkedin_url", "source", "notes", mode="before"
+    )(_blank_to_none)
 
 
 class InstitutionRef(ORM):
@@ -239,9 +243,11 @@ class ContactOut(ORM):
     id: int
     institution_id: int
     institution: InstitutionRef
+    salutation: str | None = None
     first_name: str
     last_name: str
     full_name: str
+    notes: str | None = None
     designation: str | None
     department: str | None
     email: str | None

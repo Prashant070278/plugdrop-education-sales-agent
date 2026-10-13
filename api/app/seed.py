@@ -29,8 +29,11 @@ from app.models import (
     Campus,
     ConsentRecord,
     Contact,
+    ContentItem,
+    EmailTemplate,
     Institution,
     Lead,
+    Mailbox,
     Opportunity,
     ResearchFinding,
     Role,
@@ -193,6 +196,11 @@ def seed_users(db: Session) -> dict[Role, User]:
 
 
 def purge_demo(db: Session) -> None:
+    from app.models import OutreachSequence
+
+    db.execute(delete(OutreachSequence).where(OutreachSequence.is_demo.is_(True)))
+    for om in (ContentItem, EmailTemplate):
+        db.execute(delete(om).where(om.is_demo.is_(True)))
     for m in (Activity, ResearchFinding, Task, ConsentRecord, Opportunity, Lead, Contact, Campaign, Institution):
         db.execute(delete(m).where(m.is_demo.is_(True)))
     db.flush()
@@ -506,6 +514,131 @@ def seed_demo(db: Session, users: dict[Role, User]) -> None:
     db.flush()
 
 
+# Demo content library. Claims are paraphrased from plugdrop.ai; an admin must confirm or replace them
+# before real outreach. No customer names, numbers or ROI claims.
+DEMO_SOURCE = "DEMO — based on plugdrop.ai public FAQ; confirm before real use"
+DEMO_CONTENT = [
+    (
+        "value_prop",
+        "Voice AI for enquiry peaks",
+        ["voice_enquiry_automation"],
+        "When enquiry calls peak around an intake, some go unanswered or wait for a call-back. PlugDrop's Voice AI agent can "
+        "answer admissions enquiry calls in natural conversation, handle common questions and record each enquiry in your CRM, "
+        "so counsellors can focus on applicants who are ready to talk.",
+    ),
+    (
+        "value_prop",
+        "Qualifying enquiries",
+        ["enquiry_qualification"],
+        "Large enquiry volumes make it hard to see which applicants are serious. PlugDrop's Voice AI can ask a few qualifying "
+        "questions on every enquiry and pass the answers to your CRM, so your team can prioritise the applicants most likely to apply.",
+    ),
+    (
+        "value_prop",
+        "Counselling assistant",
+        ["counselling"],
+        "Counsellors spend much of the peak season answering the same questions. PlugDrop's AI assistant can handle routine "
+        "questions about courses and deadlines and hand over to a counsellor when a conversation needs one.",
+    ),
+    (
+        "value_prop",
+        "Missed-call recovery",
+        ["missed_call_recovery"],
+        "Calls that arrive after hours or during busy periods are easy to miss. PlugDrop can call back missed enquiries and log "
+        "the outcome, so fewer prospective students slip through.",
+    ),
+    (
+        "value_prop",
+        "Applicant follow-up",
+        ["follow_up"],
+        "Applicants often need several reminders before they finish an application. PlugDrop can run polite follow-ups by voice "
+        "and WhatsApp and record every response in your CRM.",
+    ),
+    (
+        "value_prop",
+        "WhatsApp engagement",
+        ["whatsapp_engagement"],
+        "Many applicants prefer WhatsApp. PlugDrop can answer and follow up enquiries on WhatsApp alongside voice, with every "
+        "conversation kept in your CRM.",
+    ),
+    (
+        "value_prop",
+        "CRM integration",
+        ["crm_integration"],
+        "When enquiries arrive by phone, WhatsApp and the web, keeping the CRM complete takes effort. PlugDrop's agents can "
+        "create and update CRM records after each conversation, which can help while a CRM change is under way.",
+    ),
+    ("cta", "Short call", [], "Would a 20-minute call next week be useful to see whether this fits your admissions process?"),
+    (
+        "cta",
+        "Right person",
+        [],
+        "Would it be worth a short conversation, or is someone else the right person for admissions enquiries?",
+    ),
+    ("cta", "Better time", [], "If this isn't a priority right now, is there a better time for me to get back in touch?"),
+    ("claim", "Languages", [], "PlugDrop's Voice AI agents can hold conversations in several languages."),
+]
+
+
+def seed_outreach_demo(db: Session, users: dict[Role, User]) -> None:
+    now = datetime.now(UTC)
+    for kind, title, ucs, body in DEMO_CONTENT:
+        db.add(
+            ContentItem(
+                kind=kind,
+                title=title,
+                body=body,
+                use_cases=ucs,
+                status="approved",
+                source_note=DEMO_SOURCE,
+                approved_by_id=users[Role.admin].id,
+                approved_at=now,
+                is_demo=True,
+            )
+        )
+    # A case study placeholder that is deliberately NOT approved, so it is never used.
+    db.add(
+        ContentItem(
+            kind="case_study",
+            title="EXAMPLE ONLY — replace with a real, approved case study",
+            use_cases=[],
+            body="Replace this with a real customer story that the customer has agreed you may share.",
+            status="draft",
+            source_note="Placeholder",
+            is_demo=True,
+        )
+    )
+    db.add(
+        EmailTemplate(
+            name="First email — admissions (demo)",
+            step=1,
+            use_case=None,
+            subject="Admissions enquiries at {inst}",
+            body="",
+            status="approved",
+            approved_by_id=users[Role.admin].id,
+            is_demo=True,
+        )
+    )
+    if db.scalar(select(Mailbox).where(Mailbox.email_address == "sales-demo@plugdrop.example")) is None:
+        db.add(
+            Mailbox(
+                provider="mock",
+                email_address="sales-demo@plugdrop.example",
+                display_name="PlugDrop Sales (demo)",
+                is_shared=True,
+                connected_by_id=users[Role.admin].id,
+                approved_by_id=users[Role.admin].id,
+                approved_at=now,
+                authorization_note="Demo shared mailbox for testing; nothing leaves the system.",
+                status="active",
+                sending_enabled=False,
+                scopes=["mock"],
+            )
+        )
+    db.flush()
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--reset", action="store_true", help="delete existing demo rows first")
@@ -517,10 +650,16 @@ def main() -> None:
             if a.reset:
                 purge_demo(db)
             if db.scalar(select(func.count()).select_from(Institution).where(Institution.is_demo.is_(True))):
-                print("Demo data already present; use --reset to recreate it.")
+                print("Demo CRM data already present; use --reset to recreate it.")
             else:
                 seed_demo(db, users)
-                print("Demo data created.")
+                print("Demo CRM data created.")
+            # Added in Stage 3: also seeds databases that were set up before outreach existed.
+            if db.scalar(select(func.count()).select_from(ContentItem).where(ContentItem.is_demo.is_(True))):
+                print("Demo outreach content already present.")
+            else:
+                seed_outreach_demo(db, users)
+                print("Demo outreach content and test mailbox created.")
         db.commit()
     print("Users: " + ", ".join(e for e, _, _ in USERS))
 

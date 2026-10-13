@@ -2,7 +2,7 @@
 
 The PlugDrop.AI sales team uses this CRM to sell Voice AI + CRM solutions to universities, colleges, university groups, EdTech companies, test-prep businesses and vocational/professional education providers.
 
-**Stage 1** is the foundation: a CRM backed by a database, with institutions, contacts, a 12-stage lead pipeline, opportunities, activity timelines, tasks, CSV import/export, duplicate detection, opt-out/suppression and a full audit history.
+**Stage 1** is the foundation (below); **Stage 2** adds AI prospect research and **Stage 3** an AI outreach agent. Stage 1: a CRM backed by a database, with institutions, contacts, a 12-stage lead pipeline, opportunities, activity timelines, tasks, CSV import/export, duplicate detection, opt-out/suppression and a full audit history.
 
 | Layer | Stack |
 |---|---|
@@ -137,7 +137,7 @@ Import limits: UTF-8, 5 MB, 5,000 rows. Every import is a dry run first and repo
 
 ```bash
 cd api
-pytest                 # 69 tests against a real Postgres (plugdrop_test; override with TEST_DATABASE_URL)
+pytest                 # 133 tests against a real Postgres (plugdrop_test; override with TEST_DATABASE_URL)
 ruff check app tests
 mypy app
 
@@ -211,6 +211,69 @@ The agent researches an institution from **cited sources**, proposes findings an
 5. Sign in as `manager@plugdrop.example`. On **Research → Scoring**, change a weight and save. The scores update.
 6. Create an institution with website `https://flaky-test.example` and research it: it fails once, then succeeds on retry. With `https://blocked-test.example` it fails permanently, and the job shows *Partial* with a **Retry** button.
 
+## Importing the team's research workbook
+
+The research team's Excel file ("PlugDrop.AI – Indian Higher-Ed Admissions Intelligence Database") can be loaded on **Research → Import workbook** (managers and admins). Choose the file, click **Preview** to see what will happen, then **Import**. Always use the newest file: each batch contains all earlier ones, and re-importing is safe because unchanged institutions are skipped.
+
+What it does:
+
+| Workbook sheet | Becomes |
+|---|---|
+| Master_List | One institution per row (country India, state and address in notes, workbook account id `PD-nnn`). Universities with the same name in different states stay separate, e.g. "Twin University (Rajasthan)". |
+| Account_Intelligence, Sales_Intelligence, Technology_Map, Sources | A research result per researched institution: triggers, current situation, gaps, technology seen and PlugDrop relevance as evidence with the source link; opportunity signal, best entry point and admissions model shown on the review page. A lead is created at stage *Researched* (not for accounts marked ON HOLD). |
+| Contact_Database | People to review, with salutation ("Prof.", "Dr.") and notes (confidence, role verified, buying role, priority, phone type). |
+| Data_Quality, conflicting names | Listed under *Missing information* on the review page. |
+
+Rules: an email is kept only where the workbook says **VERIFIED**, and it is stored as *published on source*, not as a tested, deliverable address. UNVERIFIED or "not used" emails and phones marked UNVERIFIED or DO NOT USE are dropped (kept in the person's notes for reference). Rows with conflicting names or no named person and no contact details are not turned into people. Statements labelled INFERENCE/REPORTED/UNVERIFIED stay inferences. **Nothing reaches contacts or findings until someone approves it** on the research result and clicks **Push to CRM**; only then can outreach start.
+
+The CRM score (out of 100) counts only evidence it can classify, so a workbook account may score lower than the researcher's STRONG/MODERATE rating. Both are shown. From the command line: `python -m app.research.workbook FILE.xlsx` (preview) or `--commit`.
+
+## Stage 3: AI outreach agent
+
+Drafts personalised B2B emails and follow-ups from **approved research only**, and records everything in the CRM. A person approves every email. Calls are made by the team, not the system.
+
+**Workflow**
+
+1. **Start outreach** (Outreach page or a lead) → choose a prospect whose research was approved and pushed, a contact with an email, a mailbox and optionally a use case. Contacts that can't be emailed are listed with the reason (no email, opted out, bounced, no approved facts, already in a sequence).
+2. The writer uses only approved facts and the approved **content library**. It drafts the first email (one observation from research + one problem + one outcome + one low-friction question) and the follow-ups. Claude writes when `ANTHROPIC_API_KEY` is set; otherwise rule-based templates.
+3. Every draft passes **quality checks** before it can be approved: length, specific to the institution, built on an approved fact, inferences worded as observations, no hype or banned phrases, nothing implying an existing relationship, no numbers/ROI not in an approved source, no products/integrations/case studies outside the approved library, a clear question, no placeholders, an opt-out line and a subject.
+4. **Edit, Redraft, Approve, Schedule, Send now/Put in mailbox, Cancel.** Editing an approved email sends it back to draft. Follow-ups are scheduled after the previous email using the policy spacing (default 0, 4, 7 days; max 3 emails).
+5. **Before each send** the system re-checks: opt-out/suppression, bounce, lead closed, any reply, recipient changed, mailbox approved, previous email sent, sending window, mailbox/global/per-institution daily limits, and that the person wasn't emailed in the last 20 hours. A send is recorded as "sending" before the provider is called, so a retry can never send twice.
+6. **Replies and delivery** are synced from the mailbox. A reply is matched to its sequence and classified as Interested, Meeting request, Needs information, Not now, Not interested, Referral, Out of office or Unclear (anyone can correct the label). Follow-ups **stop** on any reply, opt-out ("unsubscribe", "remove me", …), bounce, suppression or **Not a fit**. Out-of-office pauses follow-ups for 7 days. An opt-out is written to the suppression list. Interested replies create a task and move the lead to *Engaged*. **Draft a reply** writes a response for review.
+7. Every action and result is logged on the sequence, on the lead's timeline and in the audit log.
+
+**Mailboxes and sending (safe by default)**
+
+- Providers: Microsoft 365 (Graph) and Google Workspace (Gmail API), connected with OAuth. Passwords are never asked for or stored. Tokens are encrypted with `TOKEN_ENCRYPTION_KEY`. Scopes are kept small: Microsoft asks for mail read/write and adds `Mail.Send` only after the policy is switched to sending; Gmail uses `gmail.compose` (drafts and sending) and `gmail.readonly` (reply and bounce sync), because Google has no draft-only scope. Either way, the app itself only sends when all three switches below are on.
+- A personal mailbox can only be used by its owner. Whoever connects a mailbox records who authorised it, and **an admin must approve it** before use.
+- **Draft-only** is the default: approved emails are placed in the mailbox as drafts for a person to send. Sending needs three things: policy set to *Send* (admin), *Allow sending* on the mailbox (admin), and `OUTREACH_EXTERNAL_SENDING_ALLOWED=true` on the server. That last switch is **off**, so real mailboxes can't send until configuration and testing are complete.
+- The **test (mock) mailbox** keeps everything inside the system. Addresses containing "bounce" bounce, and **Simulate reply** on a sequence lets you test reply handling.
+
+**Settings → Outreach** (admin): mailboxes, messaging policy (mode, attempts, spacing, limits, sending window and time zone, word limits, signature, opt-out line, banned phrases, restricted product names), content library (managers add; admins approve; edits need re-approval) and templates. Demo content is marked DEMO and based on the public plugdrop.ai FAQ; replace it with your approved messaging.
+
+## How to verify Stage 3 by hand
+
+1. Sign in as `admin@plugdrop.example`. In **Settings → Outreach**, set the sending window to 0–24 and the mode to *Send*, then click **Allow sending** on the test mailbox.
+2. Research a demo institution (Stage 2 steps), approve the facts and one person with an email, and **Push to CRM**.
+3. **Outreach → Start outreach** → choose that prospect and person → **Draft emails**. Check the quality checks and "Why this email?".
+4. **Edit** the first email, save, **Approve**, **Send now**. It shows *Delivered*; the lead timeline shows "Email sent"; follow-up 1 can be approved and scheduled.
+5. **Simulate reply** "Can we talk Thursday at 3pm?" → classified *Meeting request*, sequence *Stopped: replied*, follow-ups *Cancelled*, a task is created.
+6. Start a second prospect, send, then simulate "Please unsubscribe me" → *Stopped: opted out*, listed under **Opt-outs & suppressed**, and a new sequence for that person is refused.
+
+The same flow is covered by the automated acceptance test `api/tests/test_outreach_flow.py`.
+
+## Checking the Docker setup
+
+Docker can't be run in the environment this was built in, so the stack was tested without it, and a check script is provided. On a computer with Docker Desktop:
+
+```bash
+cp .env.example .env     # set POSTGRES_PASSWORD, JWT_SECRET and SEED_PASSWORD (any long random text)
+./scripts/docker-smoke-test.sh                       # builds, starts, seeds, signs in, calls every module
+./scripts/docker-smoke-test.sh path/to/workbook.xlsx # also previews a workbook import (nothing saved)
+```
+
+It prints PASS/FAIL per check and leaves the app running at http://localhost:3000 (`docker compose down` stops it). GitHub Actions runs the same script on every pull request (`docker` job), plus a check that the API starts with only the production dependencies.
+
 ## Deployment
 
 1. Provision PostgreSQL 16 and set `DATABASE_URL`.
@@ -228,7 +291,8 @@ The agent researches an institution from **cited sources**, proposes findings an
 
 ## Not built yet
 
-- outreach automation: sending email or WhatsApp, placing Voice AI calls (Stage 3)
+- WhatsApp and Voice AI calls (calls are made by the team)
+- live Gmail/Microsoft 365 connection: code is ready, but needs OAuth apps registered and testing before `OUTREACH_EXTERNAL_SENDING_ALLOWED` is turned on
 - a licensed real-world research provider (the provider interface is ready; only the fictional mock is included)
 - calendar booking
 - email reminders for due tasks (reminders show in the app only)
