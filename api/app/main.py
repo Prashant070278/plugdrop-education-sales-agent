@@ -17,14 +17,18 @@ from app.routers import (
     consent,
     contacts,
     dashboard,
+    engagement,
     institutions,
     leads,
+    linkedin,
+    meetings,
     opportunities,
     outreach,
     research,
     settings,
     tasks,
     users,
+    whatsapp,
 )
 
 log = logging.getLogger("plugdrop")
@@ -73,6 +77,10 @@ def _start_worker() -> None:
         from app.outreach.service import start_embedded_worker as start_outreach_worker
 
         start_outreach_worker(SessionLocal)
+    if get_settings().engagement_worker == "embedded":
+        from app.engagement.worker import start_embedded_worker as start_engagement_worker
+
+        start_engagement_worker(SessionLocal)
 
 
 @app.get("/api/health", tags=["system"])
@@ -91,6 +99,10 @@ for r in (
     opportunities,
     outreach,
     research,
+    engagement,
+    whatsapp,
+    meetings,
+    linkedin,
     activities,
     tasks,
     campaigns,

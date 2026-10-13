@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DemoBadge, EmptyState, ErrorState, Field, PageHeader, Pagination } from "@/components/common";
 import { ConsentDialog } from "@/components/forms";
 import { OutreachSettings } from "@/components/outreach-settings";
+import { ChannelsSettings } from "@/components/channels-settings";
 import { useCan, useUser } from "@/components/auth";
 import { useToast } from "@/components/toast";
 import { api, useApi } from "@/lib/api";
@@ -275,7 +276,8 @@ export default function SettingsPage() {
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="mb-2 h-auto flex-wrap">
           <TabsTrigger value="integrations">Integrations</TabsTrigger>
-          <TabsTrigger value="outreach">Outreach</TabsTrigger>
+          <TabsTrigger value="outreach">Email outreach</TabsTrigger>
+          <TabsTrigger value="channels">WhatsApp, calendars & permissions</TabsTrigger>
           <TabsTrigger value="suppression">Opt-outs</TabsTrigger>
           <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
           {isManager && <TabsTrigger value="audit">Audit log</TabsTrigger>}
@@ -284,6 +286,7 @@ export default function SettingsPage() {
         </TabsList>
         <TabsContent value="integrations"><Integrations /></TabsContent>
         <TabsContent value="outreach"><OutreachSettings /></TabsContent>
+        <TabsContent value="channels"><ChannelsSettings /></TabsContent>
         <TabsContent value="suppression"><Suppression /></TabsContent>
         <TabsContent value="campaigns"><Campaigns /></TabsContent>
         {isManager && <TabsContent value="audit"><AuditLog /></TabsContent>}

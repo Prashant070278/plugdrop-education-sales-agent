@@ -196,8 +196,10 @@ def seed_users(db: Session) -> dict[Role, User]:
 
 
 def purge_demo(db: Session) -> None:
-    from app.models import OutreachSequence
+    from app.models import LinkedinItem, Meeting, OutreachSequence, WaConversation, WaTemplate
 
+    for sm in (Meeting, WaConversation, LinkedinItem, WaTemplate):
+        db.execute(delete(sm).where(sm.is_demo.is_(True)))
     db.execute(delete(OutreachSequence).where(OutreachSequence.is_demo.is_(True)))
     for om in (ContentItem, EmailTemplate):
         db.execute(delete(om).where(om.is_demo.is_(True)))
@@ -487,6 +489,16 @@ def seed_demo(db: Session, users: dict[Role, User]) -> None:
             is_demo=True,
         )
     )
+    # Stage 4: every task has a reason and a source activity.
+    db.flush()
+    for task in db.scalars(select(Task).where(Task.is_demo.is_(True), Task.reason.is_(None))):
+        src = Activity(
+            activity_type="task", subject=f"Task created: {task.title}", lead_id=task.lead_id, institution_id=task.institution_id,
+            contact_id=task.contact_id, user_id=task.owner_id, details={"reason": "manual"}, is_demo=True,
+        )  # fmt: skip
+        db.add(src)
+        db.flush()
+        task.reason, task.source_activity_id = "manual", src.id
     opted_out = contacts_by_inst[insts[-1].id][0]
     db.add(
         ConsentRecord(
@@ -639,6 +651,67 @@ def seed_outreach_demo(db: Session, users: dict[Role, User]) -> None:
     db.flush()
 
 
+DEMO_WA_TEMPLATES = [
+    (
+        "admissions_intro_v1",
+        "marketing",
+        "first_contact",
+        "Hello {{1}}, this is {{2}} from PlugDrop.AI. You said we could contact you on WhatsApp about handling admissions "
+        "enquiries at {{3}}. Would a short call next week be useful? Reply STOP to opt out.",
+        [
+            {"label": "Greeting", "source": "contact.greeting"},
+            {"label": "Your name", "source": "sender.name"},
+            {"label": "Institution", "source": "institution.name"},
+        ],
+    ),
+    (
+        "meeting_reminder_v1",
+        "utility",
+        "meeting",
+        "Hello {{1}}, a reminder of our call on {{2}}. Reply here if you need to change the time.",
+        [{"label": "Greeting", "source": "contact.greeting"}, {"label": "Date and time", "source": "custom"}],
+    ),
+]
+
+
+def seed_engagement_demo(db: Session, users: dict[Role, User]) -> None:
+    """Stage 4 demo: WhatsApp templates (approved by the mock provider) and approved test calendars for the users."""
+    from app.models import CalendarConnection, WaTemplate
+
+    now = datetime.now(UTC)
+    for name, category, purpose, body, params in DEMO_WA_TEMPLATES:
+        if not db.scalar(select(WaTemplate.id).where(WaTemplate.name == name)):
+            db.add(
+                WaTemplate(
+                    name=name,
+                    language="en",
+                    category=category,
+                    purpose=purpose,
+                    body=body,
+                    params=params,
+                    status="approved",
+                    provider_template_id=f"mock-tpl-{name}-en",
+                    is_demo=True,
+                )  # fmt: skip
+            )
+    for u in users.values():
+        if not db.scalar(
+            select(CalendarConnection.id).where(CalendarConnection.user_id == u.id, CalendarConnection.provider == "mock")
+        ):
+            db.add(
+                CalendarConnection(
+                    user_id=u.id,
+                    provider="mock",
+                    email_address=u.email,
+                    status="active",
+                    scopes=["mock"],
+                    approved_by_id=users[Role.admin].id,
+                    approved_at=now,
+                )  # fmt: skip
+            )
+    db.flush()
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--reset", action="store_true", help="delete existing demo rows first")
@@ -660,6 +733,9 @@ def main() -> None:
             else:
                 seed_outreach_demo(db, users)
                 print("Demo outreach content and test mailbox created.")
+            # Added in Stage 4 (idempotent): demo WhatsApp templates and test calendars.
+            seed_engagement_demo(db, users)
+            print("Demo WhatsApp templates and test calendars ready.")
         db.commit()
     print("Users: " + ", ".join(e for e, _, _ in USERS))
 

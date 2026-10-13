@@ -41,11 +41,15 @@ echo "5/5 Signing in through the web app and calling each module"
 code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -H 'Content-Type: application/json' \
   -d "{\"email\":\"admin@plugdrop.example\",\"password\":\"$PASSWORD\"}" "$WEB/api/auth/login")
 [ "$code" = 200 ] && pass "sign in as admin" || fail "sign in as admin (HTTP $code — is SEED_PASSWORD the one used when seeding?)"
-for path in /api/dashboard /api/institutions /api/leads /api/research/overview /api/outreach/overview /api/outreach/mailboxes /api/outreach/policy; do
+for path in /api/dashboard /api/institutions /api/leads /api/research/overview /api/outreach/overview /api/outreach/mailboxes /api/outreach/policy /api/whatsapp/status /api/whatsapp/templates /api/meetings /api/engagement/policy /api/engagement/permissions /api/linkedin/items; do
   check "GET $path" "curl -fsS -b $JAR $WEB$path"
 done
 mode=$(curl -fsS -b "$JAR" "$WEB/api/outreach/policy" | grep -o '"external_sending_allowed":[a-z]*')
 [ "$mode" = '"external_sending_allowed":false' ] && pass "external email sending is switched off" || fail "external email sending should be off until configured ($mode)"
+wa=$(curl -fsS -b "$JAR" "$WEB/api/whatsapp/status" | grep -o '"external_sending_allowed":[a-z]*')
+[ "$wa" = '"external_sending_allowed":false' ] && pass "external WhatsApp sending is switched off" || fail "external WhatsApp sending should be off until configured ($wa)"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$WEB/api/whatsapp/webhook")
+[ "$code" = 401 ] && pass "WhatsApp webhook rejects unsigned calls" || fail "WhatsApp webhook should reject unsigned calls (HTTP $code)"
 
 if [ "${1:-}" != "" ]; then
   echo "Extra: previewing the research workbook import (nothing is saved)"

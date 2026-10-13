@@ -253,6 +253,7 @@ class ContactOut(ORM):
     email: str | None
     phone: str | None
     linkedin_url: str | None
+    whatsapp_number: str | None = None
     verification_status: VerificationStatus
     source: str | None
     last_verified_at: datetime | None
@@ -467,6 +468,10 @@ class TaskOut(ORM):
     is_demo: bool
     created_at: datetime
     institution_name: str | None = None
+    reason: str | None = None
+    source_activity_id: int | None = None
+    source_activity_subject: str | None = None
+    meeting_id: int | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

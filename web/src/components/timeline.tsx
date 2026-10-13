@@ -1,5 +1,5 @@
 "use client";
-import { ArrowRightLeft, CalendarCheck, CheckSquare, Mail, MessageSquareReply, Microscope, Phone, StickyNote } from "lucide-react";
+import { ArrowRightLeft, CalendarCheck, CheckSquare, Network, Mail, MessageCircle, MessageSquareReply, Microscope, Phone, StickyNote } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useApi } from "@/lib/api";
 import { dateTime, label } from "@/lib/format";
@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 const ICON: Record<ActivityType, React.ElementType> = {
   research: Microscope, call: Phone, email: Mail, reply: MessageSquareReply, meeting: CalendarCheck,
-  task: CheckSquare, status_change: ArrowRightLeft, note: StickyNote,
+  task: CheckSquare, status_change: ArrowRightLeft, note: StickyNote, whatsapp: MessageCircle, linkedin: Network,
 };
 
 export function Timeline({ items }: { items: Activity[] | undefined }) {

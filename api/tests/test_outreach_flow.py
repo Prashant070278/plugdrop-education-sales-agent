@@ -4,6 +4,7 @@ ACCEPTANCE (from the Stage 3 brief): a prospect is researched, an email is gener
 mock provider, recorded in the CRM, and stopped from receiving follow-ups after replying or opting out.
 """
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -389,11 +390,9 @@ def test_meeting_request_reply_draft_needs_edit_before_approval(rep, adm, manage
     d = rep.post(f"/api/outreach/replies/{reply['id']}/draft").json()
     draft = step(d, 1, "reply")
     assert rep.post(f"/api/outreach/messages/{draft['id']}/approve").status_code == 422
-    body = (
-        draft["body"]
-        .replace("[EDIT: time option 1]", "Thursday at 3pm IST")
-        .replace("[EDIT: time option 2]", "Friday at 11am IST")
-    )
+    # The meeting assistant has already drafted this reply; with no calendar connected it leaves the times to a person.
+    assert draft["generated_by"] == "meeting-assistant" and "[EDIT" in draft["body"]
+    body = re.sub(r"\[EDIT[^\]]*\]", "Thursday at 3pm IST or Friday at 11am IST", draft["body"])
     rep.patch(f"/api/outreach/messages/{draft['id']}", json={"subject": draft["subject"], "body": body})
     assert step(rep.post(f"/api/outreach/messages/{draft['id']}/approve").json(), 1, "reply")["status"] == "approved"
     sent = step(rep.post(f"/api/outreach/messages/{draft['id']}/send-now").json(), 1, "reply")

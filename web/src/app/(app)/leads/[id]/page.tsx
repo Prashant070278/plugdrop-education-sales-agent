@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { use, useState } from "react";
-import { ArrowRightLeft, Building2, CalendarClock, Check, MailPlus, Microscope, Pencil, Plus, MessageSquarePlus } from "lucide-react";
+import { ArrowRightLeft, Building2, CalendarCheck, CalendarClock, Check, MailPlus, Microscope, Pencil, Plus, MessageSquarePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
@@ -9,8 +9,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DemoBadge, ErrorState, PageHeader, PriorityBadge, StageBadge } from "@/components/common";
 import { ActivityDialog, OpportunityDialog, OwnerSelect, ResearchDialog, StageDialog, TaskDialog } from "@/components/forms";
-import { AuditList, Timeline } from "@/components/timeline";
+import { AuditList } from "@/components/timeline";
 import { SequenceStatusBadge, StartOutreachDialog } from "@/components/outreach";
+import { EngagementPanel, InteractionTimeline, ProposeMeetingDialog, ReasonBadge } from "@/components/engagement";
 import { useToast } from "@/components/toast";
 import { api, useApi } from "@/lib/api";
 import { date, dateTime, label, money } from "@/lib/format";
@@ -44,7 +45,8 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   const { data: research, mutate: mutResearch } = useApi<Research[]>(`/leads/${id}/research`);
   const { data: contacts } = useApi<Page<Contact>>(lead ? "/contacts" : null, { institution_id: lead?.institution.id, page_size: 100 });
   const { data: seqs } = useApi<Page<OutreachSequence>>("/outreach/sequences", { lead_id: id, page_size: 20 });
-  const [dialog, setDialog] = useState<null | "stage" | "activity" | "task" | "opp" | "research" | "outreach">(null);
+  const [dialog, setDialog] = useState<null | "stage" | "activity" | "task" | "opp" | "research" | "outreach" | "meeting">(null);
+  const [tlKey, setTlKey] = useState(0);
   const [editOpp, setEditOpp] = useState<Opportunity | undefined>();
   const [editTask, setEditTask] = useState<Task | undefined>();
   const [editing, setEditing] = useState(false);
@@ -53,7 +55,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   if (error) return <ErrorState error={error} retry={() => mutate()} />;
   if (!lead) return <div className="grid gap-4"><Skeleton className="h-16" /><Skeleton className="h-96" /></div>;
 
-  const refreshAll = () => { mutate(); mutTl(); mutTasks(); mutOpps(); mutResearch(); };
+  const refreshAll = () => { mutate(); mutTl(); mutTasks(); mutOpps(); mutResearch(); setTlKey((k) => k + 1); };
   const toggleTask = async (t: Task) => {
     await api(`/tasks/${t.id}`, { method: "PATCH", json: { status: t.status === "open" ? "done" : "open" } }).catch((e) => toast("error", e.message));
     mutTasks(); mutate();
@@ -77,6 +79,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
       <PageHeader eyebrow={`Lead #${lead.id}`} title={lead.institution.name}
         actions={<>
           <Button variant="outline" onClick={() => setDialog("outreach")}><MailPlus />Start outreach</Button>
+          <Button variant="outline" onClick={() => setDialog("meeting")} disabled={!contacts?.items.length}><CalendarCheck />Propose meeting</Button>
           <Button variant="outline" onClick={() => setDialog("activity")}><MessageSquarePlus />Log activity</Button>
           <Button variant="outline" onClick={() => { setEditTask(undefined); setDialog("task"); }}><CalendarClock />Add task</Button>
           <Button onClick={() => setDialog("stage")}><ArrowRightLeft />Move stage</Button>
@@ -103,13 +106,13 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <Card className="min-w-0 xl:col-span-2">
-          <Tabs defaultValue="timeline">
+          <Tabs defaultValue="interactions">
             <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
-              <TabsList><TabsTrigger value="timeline">Timeline</TabsTrigger><TabsTrigger value="research">Research ({research?.length ?? 0})</TabsTrigger><TabsTrigger value="audit">Audit</TabsTrigger></TabsList>
+              <TabsList className="h-auto flex-wrap"><TabsTrigger value="interactions">All interactions</TabsTrigger><TabsTrigger value="research">Research ({research?.length ?? 0})</TabsTrigger><TabsTrigger value="audit">Audit</TabsTrigger></TabsList>
               <Button size="sm" variant="ghost" onClick={() => setDialog("research")}><Microscope />Add finding</Button>
             </CardHeader>
             <CardContent>
-              <TabsContent value="timeline" className="mt-0"><Timeline items={timeline} /></TabsContent>
+              <TabsContent value="interactions" className="mt-0"><InteractionTimeline leadId={lead.id} refreshKey={tlKey + (timeline?.length ?? 0)} /></TabsContent>
               <TabsContent value="research" className="mt-0">
                 {research?.length === 0 && <p className="text-sm text-muted-foreground">No research yet.</p>}
                 <ul className="grid gap-3">{research?.map((r) => (
@@ -126,6 +129,10 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
         </Card>
 
         <div className="grid min-w-0 grid-cols-1 content-start gap-6">
+          <Card>
+            <CardHeader><CardTitle>People and channels</CardTitle></CardHeader>
+            <CardContent>{contacts ? <EngagementPanel leadId={lead.id} contacts={contacts.items} onChange={refreshAll} /> : <Skeleton className="h-16" />}</CardContent>
+          </Card>
           <Card>
             <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
               <CardTitle>Details</CardTitle>
@@ -178,7 +185,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
             <CardContent className="grid gap-2">
               {tasks?.length === 0 && <p className="text-sm text-muted-foreground">No tasks.</p>}
               {tasks?.map((t) => (
-                <div key={t.id} className="flex items-start gap-2.5 text-sm">
+                <div key={t.id} className="flex min-w-0 items-start gap-2.5 text-sm">
                   <button onClick={() => toggleTask(t)} aria-label={t.status === "open" ? `Complete ${t.title}` : `Reopen ${t.title}`}
                     className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border", t.status === "done" && "border-primary bg-primary text-primary-foreground")}>
                     {t.status === "done" && <Check className="size-3" />}
@@ -186,6 +193,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
                   <button className="min-w-0 flex-1 text-left" onClick={() => { setEditTask(t); setDialog("task"); }}>
                     <div className={cn(t.status === "done" && "text-muted-foreground line-through")}>{t.title}</div>
                     <div className={cn("text-xs", t.overdue ? "text-red-700" : "text-muted-foreground")}>{t.due_at ? `Due ${dateTime(t.due_at)}` : "No due date"} · {t.owner?.full_name}</div>
+                    {t.reason && t.reason !== "manual" && <div className="mt-0.5 min-w-0 text-xs text-muted-foreground"><ReasonBadge reason={t.reason} />{t.source_activity_subject && <div className="truncate" title={t.source_activity_subject}>from: {t.source_activity_subject}</div>}</div>}
                   </button>
                   <PriorityBadge value={t.priority} />
                 </div>
@@ -200,6 +208,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
       <TaskDialog open={dialog === "task"} onOpenChange={(o) => !o && setDialog(null)} initial={editTask} link={{ lead_id: lead.id, institution_id: lead.institution.id, contact_id: lead.primary_contact?.id }} onSaved={refreshAll} />
       <OpportunityDialog open={dialog === "opp"} onOpenChange={(o) => !o && setDialog(null)} lead={lead} initial={editOpp} onSaved={refreshAll} />
       <ResearchDialog open={dialog === "research"} onOpenChange={(o) => !o && setDialog(null)} institutionId={lead.institution.id} leadId={lead.id} onSaved={refreshAll} />
+      <ProposeMeetingDialog open={dialog === "meeting"} onOpenChange={(o) => setDialog(o ? "meeting" : null)} leadId={lead.id} contacts={contacts?.items ?? []} />
       <StartOutreachDialog open={dialog === "outreach"} onOpenChange={(o) => setDialog(o ? "outreach" : null)} leadId={lead.id} />
     </>
   );

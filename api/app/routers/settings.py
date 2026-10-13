@@ -77,17 +77,24 @@ def system(_: CurrentUser, db: DB) -> SystemInfo:
         ),
         Integration(
             key="whatsapp",
-            name="WhatsApp Business",
-            description="Send WhatsApp follow-ups.",
-            status=st(s.whatsapp_api_token),
-            env_vars=["WHATSAPP_API_TOKEN"],
+            name="WhatsApp Business Platform",
+            description=(
+                "Test provider: nothing leaves the system."
+                if s.whatsapp_provider == "mock"
+                else "Official Cloud API. "
+                + ("External sending is ON." if s.whatsapp_external_sending_allowed else "External sending is OFF.")
+            ),
+            status="connected"
+            if s.whatsapp_provider == "mock" or (s.whatsapp_access_token and s.whatsapp_phone_number_id and s.whatsapp_app_secret)
+            else "not_configured",
+            env_vars=["WHATSAPP_PROVIDER", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_APP_SECRET"],
         ),
         Integration(
             key="calendar",
-            name="Calendar",
-            description="Book meetings from the lead page.",
-            status=st(s.calendar_api_key),
-            env_vars=["CALENDAR_API_KEY"],
+            name="Calendars (Google / Microsoft 365)",
+            description="Each person connects their own calendar in Settings → Channels; an admin approves it.",
+            status="connected" if s.token_encryption_key and (s.google_client_id or s.microsoft_client_id) else "not_configured",
+            env_vars=["TOKEN_ENCRYPTION_KEY", "GOOGLE_CLIENT_ID", "MICROSOFT_CLIENT_ID"],
         ),
         Integration(
             key="research",
@@ -119,9 +126,9 @@ def system(_: CurrentUser, db: DB) -> SystemInfo:
 def purge_demo(user: AdminUser, db: DB, request: Request) -> dict[str, int]:
     """Delete every row flagged is_demo. Order respects foreign keys."""
     removed: dict[str, int] = {}
-    from app.models import ContentItem, EmailTemplate, OutreachSequence
+    from app.models import ContentItem, EmailTemplate, LinkedinItem, Meeting, OutreachSequence, WaConversation, WaTemplate
 
-    for m in (OutreachSequence, ContentItem, EmailTemplate):
+    for m in (Meeting, WaConversation, LinkedinItem, WaTemplate, OutreachSequence, ContentItem, EmailTemplate):
         res0 = db.execute(delete(m).where(m.is_demo.is_(True)))
         removed[m.__tablename__] = res0.rowcount or 0
     for key in [

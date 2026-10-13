@@ -137,7 +137,7 @@ Import limits: UTF-8, 5 MB, 5,000 rows. Every import is a dry run first and repo
 
 ```bash
 cd api
-pytest                 # 177 tests against a real Postgres (plugdrop_test; override with TEST_DATABASE_URL)
+pytest                 # 201 tests against a real Postgres (plugdrop_test; override with TEST_DATABASE_URL)
 ruff check app tests
 mypy app
 
@@ -262,6 +262,68 @@ Drafts personalised B2B emails and follow-ups from **approved research only**, a
 
 The same flow is covered by the automated acceptance test `api/tests/test_outreach_flow.py`.
 
+## Stage 4: Coordinated engagement (WhatsApp, meetings, follow-ups, LinkedIn)
+
+Takes a prospect from first interest to a booked meeting across email and WhatsApp, with one timeline per contact. A person approves every outgoing message and every meeting.
+
+**One timeline, one record (channel coordination)**
+
+- Every email, WhatsApp message, meeting, task, LinkedIn action and research step is written to the lead's timeline. The lead page has an **All interactions** tab with channel filters; meetings and the WhatsApp inbox show the same timeline for the person.
+- **Before any outreach** (email follow-up, WhatsApp, LinkedIn draft) the system checks the shared record: opt-out/suppression, the current conversation state (waiting for our reply, meeting being arranged or booked), open tasks, and recent messages on *any* channel. The result is *block*, *wait* or *warning*, shown to the user with the reason. Examples: an email follow-up waits if the person had a WhatsApp message in the last 20 hours; nothing automatic goes out while a meeting is being arranged.
+- An opt-out on either channel ("STOP" on WhatsApp, "unsubscribe" by email) stops both channels.
+
+**WhatsApp (Module A)**
+
+- Uses the **official WhatsApp Business Platform (Meta Cloud API)** behind a provider layer. A **test (mock) provider** keeps everything inside the system. Personal WhatsApp accounts are never automated.
+- A person can be messaged only after **opt-in is recorded** (how and when they agreed). Numbers found by research are never messaged.
+- Outside the 24-hour customer-service window only **approved templates** can be sent. Templates are managed in Settings (managers add, admins approve; marketing templates must include an opt-out line).
+- Incoming messages arrive through a webhook whose signature is checked; duplicate deliveries are ignored. Each message is linked to the contact, classified (interested, meeting request, needs information, not now, not interested, opt-out, unclear) and given a **suggested reply** that a person edits and approves.
+- **Hand off to a person** stops suggestions for a conversation and creates a task for its owner.
+- Delivery status (sent, delivered, read, failed) and errors are shown per message. Failed sends retry with back-off; per-minute and daily limits apply; a message is marked "sending" before the provider is called so it can never go twice.
+
+**Meeting assistant (Module B)**
+
+- When a reply asks for a meeting or shows interest, the assistant reads the request (e.g. "Thursday at 3pm"), suggests an agenda from the approved research, proposes free times from the owner's **connected calendar** (working hours, India time by default) and drafts the reply for approval.
+- The calendar event is created **only after someone presses Approve and book**. Attendees, notes, outcome and next steps are saved to the CRM; the lead moves to *Meeting booked*.
+- Calendars: Google and Microsoft 365 over OAuth (tokens encrypted), each approved by an admin. Test calendars are used for demos.
+
+**Follow-up tasks (Module C)**
+
+Created automatically, never duplicated, each with an **owner, due date, reason and source activity**: reply needed, interested but no meeting booked, meeting needs confirmation, post-meeting follow-up, proposal follow-up, and reconnect later ("try us in March" → a task in March). They close themselves when the condition is met (e.g. the meeting gets booked). A background check runs every 30 seconds.
+
+**LinkedIn**
+
+Research notes, connection-note drafts (300-character limit) and post ideas only. There is no scraping, no automatic connection requests and no LinkedIn messaging: a person copies the text into LinkedIn and records that it was done.
+
+**Admin controls (Settings → WhatsApp, calendars & permissions)**
+
+WhatsApp on/off, limits, quiet time between touches, meeting hours, follow-up timings, templates, calendar approvals, and the **minimum role for each action** (e.g. who can approve templates or book meetings). All actions write structured logs with phone numbers masked and message bodies left out.
+
+### Setting up real WhatsApp (when ready)
+
+1. In Meta Business Manager, verify the business and create a WhatsApp Business account and phone number.
+2. Create a System User token with `whatsapp_business_messaging` and `whatsapp_business_management`.
+3. In `.env`: `WHATSAPP_PROVIDER=meta`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` (any long random text).
+4. In Meta's webhook settings use `https://<your-domain>/api/whatsapp/webhook`, the same verify token, and subscribe to `messages`.
+5. Create the templates in Meta, add them in Settings with the same names, and approve them.
+6. Test with your own opted-in numbers. Only then set `WHATSAPP_EXTERNAL_SENDING_ALLOWED=true` and switch WhatsApp on in Settings. Until both are on, nothing is sent to real numbers.
+
+### Setting up calendars
+
+Reuse the Google and Microsoft OAuth apps from Stage 3 and add the redirect URIs listed in `.env.example`. Calendar scopes: Google `calendar.events` + `calendar.freebusy`; Microsoft `Calendars.ReadWrite`. Each user connects their calendar in **Settings → WhatsApp, calendars & permissions**; an admin approves it. Set `CALENDAR_MOCK_ENABLED=false` in production.
+
+## How to verify Stage 4 by hand
+
+1. Sign in as admin. **Settings → WhatsApp, calendars & permissions** → switch WhatsApp on (test provider). Test calendars are already connected for the demo users.
+2. Send a first email to a prospect (Stage 3 steps), then **Simulate reply** "Could we speak on Thursday at 3pm?".
+3. Check: sequence *Stopped: replied*, follow-ups *Cancelled*; a **meeting** appears under Meetings with Thursday 3pm marked "the time they asked for"; a reply email with the times is drafted; tasks "Reply needed" and "Interested – no meeting yet" show owner, due date, reason and source.
+4. Approve and send the reply. On the meeting, pick the time → **Approve and book**. The lead moves to *Meeting booked* and a confirmation task appears.
+5. On the lead, **People and channels → WhatsApp** → record opt-in. In the WhatsApp inbox type a message under **Test: simulate a message from them**, then **Use suggested reply → Approve & send**.
+6. The lead's **All interactions** tab shows the email, reply, meeting, tasks and WhatsApp messages in one timeline.
+7. Send "STOP" from the simulated WhatsApp number → the contact is opted out on both channels.
+
+The acceptance test is automated in `api/tests/test_engagement.py` (24 tests: acceptance flow, coordination, WhatsApp rules, webhook signatures and duplicates, retries, meetings, tasks, LinkedIn, permissions, log masking). All external services are replaced by test providers in the tests.
+
 ## Checking the Docker setup
 
 Docker can't be run in the environment this was built in, so the stack was tested without it, and a check script is provided. On a computer with Docker Desktop:
@@ -291,10 +353,11 @@ It prints PASS/FAIL per check and leaves the app running at http://localhost:300
 
 ## Not built yet
 
-- WhatsApp and Voice AI calls (calls are made by the team)
+- Voice AI calls (calls are made by the team)
+- live WhatsApp sending: code is ready, but needs the Meta business account, approved templates and testing before `WHATSAPP_EXTERNAL_SENDING_ALLOWED` is turned on
+- live Google/Microsoft calendars: code is ready, needs OAuth apps and testing
 - live Gmail/Microsoft 365 connection: code is ready, but needs OAuth apps registered and testing before `OUTREACH_EXTERNAL_SENDING_ALLOWED` is turned on
 - a licensed real-world research provider (the provider interface is ready; only the fictional mock is included)
-- calendar booking
 - email reminders for due tasks (reminders show in the app only)
 - password reset and SSO
 - per-record access restrictions (all signed-in users can see all records)
