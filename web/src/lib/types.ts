@@ -26,7 +26,7 @@ export type OppStage = (typeof OPP_STAGES)[number];
 export const SOLUTIONS = ["voice_ai", "crm", "chat", "whatsapp", "automation"] as const;
 export type Solution = (typeof SOLUTIONS)[number];
 
-export const ACTIVITY_TYPES = ["research", "call", "email", "reply", "meeting", "task", "status_change", "note"] as const;
+export const ACTIVITY_TYPES = ["research", "call", "email", "reply", "meeting", "task", "status_change", "note", "whatsapp", "linkedin"] as const;
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];
 
 export const VERIFICATION = ["unverified", "verified", "bounced", "invalid"] as const;
@@ -49,7 +49,7 @@ export interface InstitutionDetail extends Institution { campuses: Campus[] }
 
 export interface Contact {
   id: number; institution_id: number; institution: { id: number; name: string }; salutation: string | null; first_name: string; last_name: string;
-  full_name: string; notes: string | null; designation: string | null; department: string | null; email: string | null; phone: string | null;
+  full_name: string; notes: string | null; whatsapp_number?: string | null; designation: string | null; department: string | null; email: string | null; phone: string | null;
   linkedin_url: string | null; verification_status: Verification; source: string | null; last_verified_at: string | null;
   is_demo: boolean; created_at: string; updated_at: string; suppressed: boolean; freshness: Freshness;
 }
@@ -87,6 +87,7 @@ export interface Task {
   priority: Priority; status: "open" | "done"; completed_at: string | null; owner: UserRef | null;
   lead_id: number | null; institution_id: number | null; contact_id: number | null; opportunity_id: number | null;
   is_demo: boolean; created_at: string; institution_name: string | null; overdue: boolean;
+  reason: string | null; source_activity_id: number | null; source_activity_subject: string | null; meeting_id: number | null;
 }
 
 export interface Campaign {
@@ -270,3 +271,76 @@ export interface OutreachPolicy {
 export interface ContentItem { id: number; kind: "case_study" | "claim" | "cta" | "value_prop"; title: string; body: string; use_cases: string[]; status: "draft" | "approved" | "retired"; source_note: string | null; approved_at: string | null; is_demo: boolean; updated_at: string }
 export interface EmailTemplateT { id: number; name: string; step: number; use_case: string | null; subject: string; body: string; status: "draft" | "approved" | "retired"; is_demo: boolean }
 export interface MailProvider { key: string; name: string; available: boolean; note: string }
+
+/* ---------- Stage 4: engagement ---------- */
+export type Channel = "email" | "whatsapp" | "meeting" | "task" | "linkedin" | "research" | "call" | "pipeline" | "note";
+export interface TimelineEntry {
+  id: number; at: string; channel: Channel; direction: "in" | "out" | "internal"; type: string; subject: string; body: string | null;
+  actor: string | null; contact: { id: number; name: string } | null; links: Record<string, number>; is_demo: boolean;
+}
+export interface CoordCheck { key: string; kind: "block" | "defer" | "warn" | "ok"; detail: string }
+export interface Verdict { channel: string; purpose: string; allowed: boolean; checks: CoordCheck[] }
+export interface ContactState {
+  contact_id: number; suppressed: boolean; email: string | null; whatsapp_number: string | null;
+  whatsapp_opt_in: { at: string; source: string; reason: string } | null;
+  conversation: { id: number; state: string; assigned_to_id: number | null; last_inbound_at: string | null; window_open_until: string | null } | null;
+  awaiting_our_reply: boolean; last_outbound_at: string | null; last_inbound_at: string | null;
+  live_sequence: { id: number; status: string } | null; meeting: { id: number; status: string; start_at: string | null } | null;
+  open_tasks: { id: number; title: string; due_at: string | null; reason: string | null }[];
+  checks?: { email_follow_up: Verdict; whatsapp_first_contact: Verdict; reply: Verdict };
+}
+export interface WaTemplate {
+  id: number; name: string; language: string; category: "marketing" | "utility"; purpose: string; body: string;
+  params: { label: string; source: string }[]; status: "draft" | "submitted" | "approved" | "rejected" | "paused" | "disabled";
+  rejection_reason: string | null; is_demo: boolean; updated_at: string;
+}
+export interface WaMessage {
+  id: number; conversation_id: number; direction: "in" | "out"; kind: "template" | "text"; template_id: number | null; body: string;
+  purpose: string | null; status: string; error: string | null; attempts: number; label: string | null; label_confidence: number | null;
+  opt_out: boolean; suggestion: string | null; approved_at: string | null; sent_at: string | null; delivered_at: string | null;
+  read_at: string | null; created_at: string;
+}
+export interface WaConversation {
+  id: number; wa_number: string; contact_id: number | null; lead_id: number | null; institution_id: number | null; profile_name: string | null;
+  state: "open" | "handoff" | "closed"; assigned_to: UserRef | null; handoff_reason: string | null; last_inbound_at: string | null;
+  last_outbound_at: string | null; unread: number; is_demo: boolean; contact_name: string | null; institution_name: string | null;
+  window_open: boolean; last_message: string | null;
+}
+export interface WaConversationDetail extends WaConversation { messages: WaMessage[]; contact_state: ContactState | null }
+export interface WaStatus {
+  provider: string; configured: boolean; sending: boolean; reason: string; external_sending_allowed: boolean; webhook_url: string;
+  opt_in_methods: Record<string, string>; param_sources: Record<string, string>;
+}
+export interface MeetingSlot { start: string; end: string; reason: string }
+export interface Meeting {
+  id: number; lead_id: number; institution_id: number; contact_id: number | null; organizer: UserRef | null; source: string;
+  intent: string | null; requested_text: string | null;
+  status: "proposed" | "awaiting_approval" | "scheduled" | "confirmed" | "completed" | "cancelled" | "no_show";
+  title: string; agenda: string; duration_minutes: number; timezone: string; proposed_slots: MeetingSlot[]; start_at: string | null;
+  end_at: string | null; location: string | null; attendees: { name?: string; email?: string; kind?: string }[]; calendar_event_id: string | null;
+  approved_at: string | null; confirmed_at: string | null; notes: string | null; outcome: string | null; next_steps: string | null;
+  draft_email_id: number | null; draft_wa_id: number | null; is_demo: boolean; created_at: string; institution_name: string;
+  contact_name: string | null; sequence_id: number | null; conversation_id: number | null;
+}
+export interface CalendarConn {
+  id: number; user_id: number; provider: "mock" | "google" | "microsoft"; email_address: string;
+  status: "pending_approval" | "active" | "needs_reauth" | "disabled"; scopes: string[]; approved_at: string | null; last_error: string | null; user_name: string;
+}
+export interface LinkedinItem {
+  id: number; kind: "note" | "connection_draft" | "message_draft" | "content_suggestion"; contact_id: number | null; lead_id: number | null;
+  institution_id: number | null; title: string; body: string; quality: { passed?: boolean; checks?: { id: string; label: string; passed: boolean; detail: string }[] };
+  status: "draft" | "approved" | "done" | "discarded"; approved_at: string | null; done_at: string | null; is_demo: boolean; created_at: string;
+}
+export interface EngagementPolicy {
+  whatsapp_enabled: boolean; whatsapp_daily_limit: number; whatsapp_per_minute: number; whatsapp_max_attempts: number;
+  min_hours_between_touches: number; block_while_awaiting_our_reply: boolean; meeting_duration_minutes: number; meeting_days_ahead: number;
+  meeting_slots_to_propose: number; meeting_hours: { start_hour: number; end_hour: number; timezone: string; weekdays_only: boolean };
+  meeting_min_notice_hours: number; video_link_template: string; interested_no_meeting_days: number; confirm_meeting_hours_before: number;
+  post_meeting_follow_up_days: number; proposal_follow_up_days: number; reconnect_default_days: number; default_task_owner_id: number | null;
+}
+export interface PermissionRow { action: string; label: string; default: string; min_role: "rep" | "manager" | "admin" }
+export const TASK_REASONS: Record<string, string> = {
+  manual: "Added by hand", reply_needed: "Reply needed", interested_no_meeting: "Interested, no meeting yet",
+  meeting_approval: "Meeting needs approval", meeting_confirmation: "Confirm meeting", post_meeting: "After the meeting",
+  proposal_follow_up: "Proposal follow-up", reconnect_later: "Reconnect later", whatsapp_handoff: "WhatsApp handed to you",
+};

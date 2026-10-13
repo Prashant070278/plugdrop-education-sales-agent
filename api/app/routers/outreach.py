@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app import audit
 from app.config import get_settings
 from app.deps import DB, AdminUser, CurrentUser, ManagerUser
+from app.engagement.policy import require
 from app.listing import ListParams, Page, paginate
 from app.models import (
     CLOSED_STAGES,
@@ -522,6 +523,7 @@ def regenerate(message_id: int, user: CurrentUser, db: DB) -> SequenceDetail:
 
 @router.post("/messages/{message_id}/approve", response_model=SequenceDetail)
 def approve(message_id: int, user: CurrentUser, db: DB) -> SequenceDetail:
+    require(db, user, "email_approve")
     m = _msg(db, message_id)
     S.approve(db, m, user)
     return _after(db, m)
@@ -536,6 +538,7 @@ def schedule(message_id: int, body: ScheduleIn, user: CurrentUser, db: DB) -> Se
 
 @router.post("/messages/{message_id}/send-now", response_model=SequenceDetail)
 def send_now(message_id: int, user: CurrentUser, db: DB) -> SequenceDetail:
+    require(db, user, "email_send")
     m = _msg(db, message_id)
     S.send_now(db, m, user)
     return _after(db, m)

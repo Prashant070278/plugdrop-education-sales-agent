@@ -58,6 +58,21 @@ class Settings(BaseSettings):
     microsoft_client_secret: str | None = None
     microsoft_tenant: str = "organizations"
 
+    # --- Stage 4: WhatsApp, calendar, engagement ---
+    whatsapp_provider: str = "mock"  # "mock" (nothing leaves the system) or "meta" (WhatsApp Business Platform Cloud API)
+    # Hard switch, like email: while false the real WhatsApp provider never sends, whatever the admin policy says.
+    whatsapp_external_sending_allowed: bool = False
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_business_account_id: str | None = None
+    whatsapp_access_token: str | None = None  # system-user token from Meta Business Manager
+    whatsapp_app_secret: str | None = None  # verifies webhook signatures (X-Hub-Signature-256)
+    whatsapp_verify_token: str | None = None  # answers Meta's webhook verification challenge
+    whatsapp_graph_version: str = "v21.0"
+    whatsapp_graph_base_url: str = "https://graph.facebook.com"
+    mock_webhook_secret: str = "mock-webhook-secret"  # signs mock-provider webhooks in tests and demos
+    calendar_mock_enabled: bool = True
+    engagement_worker: str = "embedded"  # "embedded" (thread in the API), "external" or "off"
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

@@ -13,6 +13,7 @@ import { api, useApi } from "@/lib/api";
 import { dateTime, relative } from "@/lib/format";
 import { PRIORITIES, type Page, type Task } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { ReasonBadge } from "@/components/engagement";
 
 export default function TasksPage() {
   const toast = useToast();
@@ -62,7 +63,7 @@ export default function TasksPage() {
                 </TD>
                 <TD>
                   <button className={cn("text-left font-medium hover:underline", t.status === "done" && "text-muted-foreground line-through")} onClick={() => { setEditing(t); setOpen(true); }}>{t.title}</button>
-                  <div><DemoBadge show={t.is_demo} /></div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-muted-foreground"><DemoBadge show={t.is_demo} /><ReasonBadge reason={t.reason} />{t.source_activity_subject && <span className="max-w-72 truncate" title={t.source_activity_subject}>from: {t.source_activity_subject}</span>}</div>
                 </TD>
                 <TD>{t.lead_id ? <Link href={`/leads/${t.lead_id}`} className="hover:underline">{t.institution_name ?? `Lead #${t.lead_id}`}</Link> : t.institution_id ? <Link href={`/institutions/${t.institution_id}`} className="hover:underline">{t.institution_name}</Link> : <span className="text-muted-foreground">—</span>}</TD>
                 <TD className={cn(t.overdue && "font-medium text-red-700")}>{t.due_at ? <><div>{dateTime(t.due_at)}</div><div className="text-xs">{relative(t.due_at)}</div></> : "—"}</TD>

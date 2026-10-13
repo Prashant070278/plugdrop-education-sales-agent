@@ -15,6 +15,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from app import audit
 from app.config import Settings, get_settings
+from app.engagement import coordination as CO
+from app.engagement import followups as FU
+from app.engagement.logs import event as log_struct
 from app.models import (
     CLOSED_STAGES,
     Activity,
@@ -30,11 +33,10 @@ from app.models import (
     OutreachSequence,
     ResearchFinding,
     ResearchRun,
-    Task,
     User,
 )
 from app.outreach import writer as W
-from app.outreach.classify import classify
+from app.outreach.classify import classify, strip_quoted
 from app.outreach.policy import load_policy
 from app.outreach.providers.base import EmailProviderError, OutgoingEmail, provider_for
 from app.research.scoring import merged_config
@@ -60,7 +62,7 @@ def log_event(
     actor: User | None = None,
     activity: tuple[str, str] | None = None,
     **data: Any,
-) -> None:
+) -> Activity | None:
     db.add(
         EmailEvent(
             sequence_id=seq.id if seq else None,
@@ -70,22 +72,33 @@ def log_event(
             data=data,
         )
     )
+    act = None
     if activity and seq:
         typ, subject = activity
-        db.add(
-            Activity(
-                activity_type=typ,
-                subject=subject[:300],
-                body=data.get("body"),
-                lead_id=seq.lead_id,
-                institution_id=seq.institution_id,
-                contact_id=seq.contact_id,
-                user_id=actor.id if actor else None,
-                details={"outreach_sequence_id": seq.id, "message_id": msg.id if msg else None, "event": event},
-                is_demo=seq.is_demo,
-            )
+        direction = "in" if typ == "reply" else "out" if typ == "email" else "internal"
+        act = Activity(
+            activity_type=typ,
+            subject=subject[:300],
+            body=data.get("body"),
+            lead_id=seq.lead_id,
+            institution_id=seq.institution_id,
+            contact_id=seq.contact_id,
+            user_id=actor.id if actor else None,
+            details={
+                "outreach_sequence_id": seq.id,
+                "message_id": msg.id if msg else None,
+                "event": event,
+                "direction": direction,
+            },
+            is_demo=seq.is_demo,
         )
-    log.info("outreach seq=%s msg=%s %s %s", seq.id if seq else None, msg.id if msg else None, event, data)
+        db.add(act)
+        db.flush()
+    fields: dict[str, Any] = {
+        k: v for k, v in data.items() if k not in ("body",) and isinstance(v, str | int | float | bool | type(None))
+    }
+    log_struct(f"email_{event}", sequence_id=seq.id if seq else None, message_id=msg.id if msg else None, **fields)
+    return act
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +175,9 @@ def eligibility(db: Session, lead: Lead, contact: Contact) -> list[str]:
     live = db.scalar(
         select(OutreachSequence.id).where(OutreachSequence.contact_id == contact.id, OutreachSequence.status.in_(LIVE))
     )
+    for c in CO.check_outreach(db, contact, "email", "cold").blocking:
+        if c.key not in ("suppressed",):
+            problems.append(c.detail)
     if live:
         problems.append(f"Contact already has an outreach sequence in progress (#{live})")
     else:
@@ -502,6 +518,9 @@ def reply_draft(db: Session, reply: EmailReply, user: User, writer: Any = None) 
         )
     if seq.stop_reason in ("opted_out", "suppressed", "bounced"):
         raise HTTPException(409, f"Contact {seq.stop_reason.replace('_', ' ')}; replying is blocked")
+    pending = next((m for m in seq.messages if m.kind == "reply" and m.status in UNSENT), None)
+    if pending is not None:
+        return pending  # one reply draft at a time (the meeting assistant may already have written one)
     step = 1 + max((m.step for m in seq.messages if m.kind == "reply"), default=0)
     msg = OutreachMessage(
         sequence_id=seq.id,
@@ -605,6 +624,12 @@ def presend(db: Session, msg: OutreachMessage, policy: dict[str, Any], now: date
         return "defer", "Mailbox daily limit reached"
     if _sent_today(db) >= policy["global_daily_limit"]:
         return "defer", "Global daily limit reached"
+    purpose = "reply" if msg.kind == "reply" else ("cold" if msg.step == 1 else "follow_up")
+    verdict = CO.check_outreach(db, contact, "email", purpose, now=now, exclude_email_id=msg.id, sequence_id=seq.id)
+    if verdict.blocking:
+        return "block", verdict.summary()
+    if verdict.deferring:
+        return "defer", verdict.summary()
     if msg.kind == "reply":
         # A reply answers the prospect; cold-outreach pacing (per-domain, 20-hour gap) does not apply.
         return "ok", ""
@@ -652,7 +677,7 @@ def dispatch_message(db: Session, msg: OutreachMessage, settings: Settings | Non
         else:
             msg.scheduled_for = (
                 next_window(now + timedelta(hours=24), policy)
-                if "limit" in reason or "20 hours" in reason
+                if "limit" in reason or "20 hours" in reason or "between messages" in reason
                 else now + timedelta(hours=1)
             )
         log_event(
@@ -741,6 +766,11 @@ def dispatch_message(db: Session, msg: OutreachMessage, settings: Settings | Non
 def _after_sent(db: Session, seq: OutreachSequence, msg: OutreachMessage, now: datetime, policy: dict[str, Any]) -> None:
     """Bookkeeping once an email has really left the mailbox: lead stage, next follow-up, sequence completion."""
     lead = seq.lead
+    if msg.kind == "reply":
+        FU.complete_tasks(db, reasons=("reply_needed",), note="answered by email", contact_id=seq.contact_id)
+        for r in seq.replies:  # answering by email handles their outstanding replies
+            if not r.handled:
+                r.handled, r.handled_at = True, now
     if msg.kind == "sequence" and lead.stage in EARLY_STAGES:
         old = lead.stage
         lead.stage, lead.stage_changed_at = "contacted", now
@@ -966,7 +996,7 @@ def handle_inbound(
 
 def apply_reply(db: Session, seq: OutreachSequence, reply: EmailReply, user: User | None) -> None:
     policy = load_policy(db)
-    log_event(
+    src = log_event(
         db,
         seq,
         None,
@@ -1021,20 +1051,33 @@ def apply_reply(db: Session, seq: OutreachSequence, reply: EmailReply, user: Use
                 is_demo=lead.is_demo,
             )
         )
-    due = datetime.now(UTC) + timedelta(hours=4 if reply.label in ("meeting_request", "interested") else 24)
-    db.add(
-        Task(
-            title=f"Respond to {seq.contact.full_name} ({reply.label.replace('_', ' ')})",
-            due_at=due,
-            priority="urgent" if reply.label == "meeting_request" else "high",
-            owner_id=lead.owner_id,
-            lead_id=lead.id,
-            institution_id=lead.institution_id,
-            contact_id=seq.contact_id,
-            is_demo=seq.is_demo,
-            description=f"Reply received to outreach sequence #{seq.id}. Review it in Outreach → Replies.",
-        )
+    assert src is not None
+    FU.on_reply(
+        db,
+        lead=lead,
+        contact_id=seq.contact_id,
+        contact_name=seq.contact.full_name,
+        label=reply.label,
+        text=strip_quoted(reply.body, (policy["opt_out_line"],)),
+        received_at=reply.received_at,
+        source=src,
+        key=f"email:{reply.id}",
+        channel="email",
     )
+    if reply.label in ("meeting_request", "interested") and not reply.opt_out:
+        from app.meetings import service as MS
+
+        MS.propose(
+            db,
+            lead=lead,
+            contact=seq.contact,
+            source="email_reply",
+            source_activity=src,
+            request_text=strip_quoted(reply.body, (policy["opt_out_line"],)),
+            intent=reply.label,
+            email_reply=reply,
+            actor=user,
+        )
 
 
 def relabel(db: Session, reply: EmailReply, user: User, label: str, opt_out: bool) -> EmailReply:
@@ -1043,6 +1086,22 @@ def relabel(db: Session, reply: EmailReply, user: User, label: str, opt_out: boo
     if opt_out and not reply.opt_out and reply.sequence:
         reply.opt_out = True
         apply_reply(db, reply.sequence, reply, user)
+    elif (
+        label in ("meeting_request", "interested") and before["label"] not in ("meeting_request", "interested") and reply.sequence
+    ):
+        seq = reply.sequence
+        src = db.scalars(
+            select(Activity)
+            .where(Activity.activity_type == "reply", Activity.contact_id == seq.contact_id)
+            .order_by(Activity.id.desc())
+        ).first()
+        if src is not None:
+            from app.meetings import service as MS
+
+            MS.propose(
+                db, lead=seq.lead, contact=seq.contact, source="email_reply", source_activity=src,
+                request_text=strip_quoted(reply.body, (load_policy(db)["opt_out_line"],)), intent=label, email_reply=reply, actor=user,
+            )  # fmt: skip
     audit.record(db, user, "relabel", "email_reply", reply.id, {"from": before, "to": {"label": label, "opt_out": opt_out}})
     db.commit()
     return reply

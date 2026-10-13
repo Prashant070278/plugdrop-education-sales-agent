@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import {
-  LayoutDashboard, Building2, Users, KanbanSquare, Briefcase, CheckSquare, Settings, LogOut, Menu, X, Microscope, Send,
+  LayoutDashboard, Building2, Users, KanbanSquare, Briefcase, CheckSquare, Settings, LogOut, Menu, X, Microscope, Send, MessageCircle, CalendarCheck, Network,
 } from "lucide-react";
 import { Wordmark } from "@/components/brand";
 import { AuthProvider, useUser } from "@/components/auth";
@@ -16,7 +16,10 @@ const NAV = [
   { href: "/institutions", label: "Institutions", icon: Building2 },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/research", label: "Research", icon: Microscope },
-  { href: "/outreach", label: "Outreach", icon: Send },
+  { href: "/outreach", label: "Email outreach", icon: Send },
+  { href: "/whatsapp", label: "WhatsApp", icon: MessageCircle },
+  { href: "/meetings", label: "Meetings", icon: CalendarCheck },
+  { href: "/linkedin", label: "LinkedIn", icon: Network },
   { href: "/leads", label: "Lead pipeline", icon: KanbanSquare },
   { href: "/opportunities", label: "Opportunities", icon: Briefcase },
   { href: "/tasks", label: "Tasks", icon: CheckSquare },

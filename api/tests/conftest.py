@@ -8,6 +8,8 @@ os.environ.setdefault("JWT_SECRET", "test-secret-test-secret-test-secret")
 os.environ["RESEARCH_WORKER"] = "off"  # tests drive the queue explicitly
 os.environ["RESEARCH_REASONER"] = "rules"
 os.environ["OUTREACH_WORKER"] = "off"
+os.environ["ENGAGEMENT_WORKER"] = "off"
+os.environ["WHATSAPP_PROVIDER"] = "mock"
 os.environ["OUTREACH_WRITER"] = "rules"
 os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "1Hn7wR1m0o3Zp4vB0yE5V9cXo6Lw5pQe8m3Jf2KdA7s=")
 os.environ.pop("ANTHROPIC_API_KEY", None)

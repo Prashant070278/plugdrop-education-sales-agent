@@ -135,6 +135,8 @@ class ActivityType(StrEnum):
     task = "task"
     status_change = "status_change"
     note = "note"
+    whatsapp = "whatsapp"
+    linkedin = "linkedin"
 
 
 OUTREACH_ACTIVITY = {ActivityType.call, ActivityType.email}
@@ -285,6 +287,8 @@ class Contact(TimestampMixin, Base):
     department: Mapped[str | None] = mapped_column(String(200))
     email: Mapped[str | None] = mapped_column(String(254))
     phone: Mapped[str | None] = mapped_column(String(50))
+    # WhatsApp number in international format (+91…). Messages need recorded opt-in (a 'consented' consent record).
+    whatsapp_number: Mapped[str | None] = mapped_column(String(20), index=True)
     linkedin_url: Mapped[str | None] = mapped_column(String(500))
     verification_status: Mapped[str] = mapped_column(String(20), nullable=False, default=VerificationStatus.unverified.value)
     source: Mapped[str | None] = mapped_column(String(200))
@@ -440,9 +444,31 @@ class Task(TimestampMixin, Base):
     institution_id: Mapped[int | None] = mapped_column(ForeignKey("institutions.id", ondelete="CASCADE"), index=True)
     contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
     opportunity_id: Mapped[int | None] = mapped_column(ForeignKey("opportunities.id", ondelete="SET NULL"))
+    # Stage 4: why the task exists and which activity created it. auto_key makes rule-created tasks idempotent.
+    reason: Mapped[str | None] = mapped_column(String(40))
+    source_activity_id: Mapped[int | None] = mapped_column(ForeignKey("activities.id", ondelete="SET NULL"))
+    meeting_id: Mapped[int | None] = mapped_column(ForeignKey("meetings.id", ondelete="SET NULL"), index=True)
+    auto_key: Mapped[str | None] = mapped_column(String(160), unique=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     owner: Mapped[User | None] = relationship()
+    source_activity: Mapped[Activity | None] = relationship(foreign_keys=[source_activity_id])
+
+    @property
+    def source_activity_subject(self) -> str | None:
+        return self.source_activity.subject if self.source_activity else None
+
+
+class TaskReason(StrEnum):
+    manual = "manual"
+    reply_needed = "reply_needed"  # a prospect replied and needs an answer
+    interested_no_meeting = "interested_no_meeting"
+    meeting_approval = "meeting_approval"
+    meeting_confirmation = "meeting_confirmation"
+    post_meeting = "post_meeting"
+    proposal_follow_up = "proposal_follow_up"
+    reconnect_later = "reconnect_later"
+    whatsapp_handoff = "whatsapp_handoff"
 
 
 class Campaign(TimestampMixin, Base):
@@ -1003,3 +1029,279 @@ class MockMail(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     delivery: Mapped[str | None] = mapped_column(String(20))  # delivered | bounced
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: WhatsApp, meetings, LinkedIn assistant
+# ---------------------------------------------------------------------------
+
+
+class WaTemplateStatus(StrEnum):
+    draft = "draft"  # written here, not yet submitted to WhatsApp
+    submitted = "submitted"  # waiting for WhatsApp (Meta) review
+    approved = "approved"  # approved by WhatsApp: may be sent
+    rejected = "rejected"
+    paused = "paused"
+    disabled = "disabled"
+
+
+class WaTemplate(TimestampMixin, Base):
+    """A WhatsApp message template. Outside the 24-hour customer-service window only approved templates may be sent."""
+
+    __tablename__ = "wa_templates"
+    __table_args__ = (
+        _check("status", WaTemplateStatus),
+        CheckConstraint("category IN ('marketing', 'utility')", name="category_valid"),
+        UniqueConstraint("name", "language", name="uq_wa_templates_name_language"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)  # lower_snake_case, as WhatsApp requires
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="en")
+    category: Mapped[str] = mapped_column(String(20), nullable=False, default="marketing")
+    body: Mapped[str] = mapped_column(Text, nullable=False)  # uses {{1}}, {{2}} …
+    params: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)  # [{"label","source"}]
+    purpose: Mapped[str] = mapped_column(String(30), nullable=False, default="first_contact")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=WaTemplateStatus.draft.value)
+    provider_template_id: Mapped[str | None] = mapped_column(String(100))
+    rejection_reason: Mapped[str | None] = mapped_column(String(500))
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class WaConversationState(StrEnum):
+    open = "open"  # handled with suggestions; a person approves every reply
+    handoff = "handoff"  # a named person owns it; automation stays out
+    closed = "closed"
+
+
+class WaConversation(TimestampMixin, Base):
+    __tablename__ = "wa_conversations"
+    __table_args__ = (_check("state", WaConversationState),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wa_number: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"), index=True)
+    lead_id: Mapped[int | None] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    institution_id: Mapped[int | None] = mapped_column(ForeignKey("institutions.id", ondelete="SET NULL"))
+    profile_name: Mapped[str | None] = mapped_column(String(200))
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default=WaConversationState.open.value)
+    assigned_to_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    handoff_reason: Mapped[str | None] = mapped_column(String(300))
+    last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_outbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    unread: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    contact: Mapped[Contact | None] = relationship()
+    assigned_to: Mapped[User | None] = relationship()
+    messages: Mapped[list[WaMessage]] = relationship(back_populates="conversation", order_by="WaMessage.id")
+
+
+class WaMessageStatus(StrEnum):
+    draft = "draft"
+    approved = "approved"
+    queued = "queued"
+    sending = "sending"
+    sent = "sent"
+    delivered = "delivered"
+    read = "read"
+    failed = "failed"
+    blocked = "blocked"
+    cancelled = "cancelled"
+    received = "received"
+
+
+class WaMessage(Base):
+    __tablename__ = "wa_messages"
+    __table_args__ = (
+        _check("status", WaMessageStatus),
+        CheckConstraint("direction IN ('in', 'out')", name="direction_valid"),
+        CheckConstraint("kind IN ('template', 'text')", name="kind_valid"),
+        Index("ix_wa_messages_conversation", "conversation_id", "created_at"),
+        Index("ix_wa_messages_queue", "status", "scheduled_for"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("wa_conversations.id", ondelete="CASCADE"), nullable=False)
+    direction: Mapped[str] = mapped_column(String(3), nullable=False)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False, default="text")
+    template_id: Mapped[int | None] = mapped_column(ForeignKey("wa_templates.id", ondelete="SET NULL"))
+    params: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    purpose: Mapped[str | None] = mapped_column(String(30))  # first_contact | reply | meeting | follow_up
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=WaMessageStatus.draft.value)
+    provider_message_id: Mapped[str | None] = mapped_column(String(200), unique=True)
+    idempotency_key: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    error: Mapped[str | None] = mapped_column(String(500))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    label: Mapped[str | None] = mapped_column(String(30))
+    label_confidence: Mapped[int | None] = mapped_column(Integer)
+    opt_out: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    suggestion: Mapped[str | None] = mapped_column(Text)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    conversation: Mapped[WaConversation] = relationship(back_populates="messages")
+    template: Mapped[WaTemplate | None] = relationship()
+
+
+class WebhookEvent(Base):
+    """Every verified webhook call, kept for de-duplication and troubleshooting."""
+
+    __tablename__ = "webhook_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    event_key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error: Mapped[str | None] = mapped_column(String(500))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class MockWhatsApp(Base):
+    """Outbox of the mock WhatsApp provider (tests and demos). Nothing here ever leaves the system."""
+
+    __tablename__ = "mock_whatsapp"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    to_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    template_name: Mapped[str | None] = mapped_column(String(100))
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_message_id: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    idempotency_key: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class CalendarConnection(TimestampMixin, Base):
+    """A person's calendar, connected with OAuth (free/busy + create events). An admin approves it before use."""
+
+    __tablename__ = "calendar_connections"
+    __table_args__ = (
+        CheckConstraint("provider IN ('mock', 'google', 'microsoft')", name="provider_valid"),
+        _check("status", MailboxStatus),
+        UniqueConstraint("user_id", "provider", name="uq_calendar_user_provider"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    email_address: Mapped[str] = mapped_column(String(254), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=MailboxStatus.pending_approval.value)
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(String(200)), nullable=False, default=list)
+    token_ciphertext: Mapped[str | None] = mapped_column(Text)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(500))
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+
+
+class MockCalendarEvent(Base):
+    """Events in the mock calendar provider (tests and demos)."""
+
+    __tablename__ = "mock_calendar_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_email: Mapped[str] = mapped_column(String(254), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attendees: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    idempotency_key: Mapped[str | None] = mapped_column(String(80), unique=True)
+
+
+class MeetingStatus(StrEnum):
+    proposed = "proposed"  # times and a reply drafted; nothing booked
+    awaiting_approval = "awaiting_approval"  # a time is chosen; needs approval before the calendar event is created
+    scheduled = "scheduled"  # calendar event created and invitation sent
+    confirmed = "confirmed"  # the prospect confirmed
+    completed = "completed"
+    cancelled = "cancelled"
+    no_show = "no_show"
+
+
+class Meeting(TimestampMixin, Base):
+    __tablename__ = "meetings"
+    __table_args__ = (
+        _check("status", MeetingStatus),
+        CheckConstraint("source IN ('email_reply', 'whatsapp', 'manual')", name="source_valid"),
+        CheckConstraint("outcome IS NULL OR outcome IN ('positive', 'neutral', 'negative', 'no_show')", name="outcome_valid"),
+        Index("ix_meetings_status_start", "status", "start_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id", ondelete="CASCADE"), nullable=False)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"), index=True)
+    organizer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    source_activity_id: Mapped[int | None] = mapped_column(ForeignKey("activities.id", ondelete="SET NULL"))
+    email_reply_id: Mapped[int | None] = mapped_column(ForeignKey("email_replies.id", ondelete="SET NULL"))
+    wa_message_id: Mapped[int | None] = mapped_column(ForeignKey("wa_messages.id", ondelete="SET NULL"))
+    intent: Mapped[str | None] = mapped_column(String(30))
+    requested_text: Mapped[str | None] = mapped_column(String(500))  # what the prospect said about timing
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=MeetingStatus.proposed.value)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    agenda: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    timezone: Mapped[str] = mapped_column(String(60), nullable=False, default="Asia/Kolkata")
+    proposed_slots: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    location: Mapped[str | None] = mapped_column(String(500))
+    attendees: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    calendar_connection_id: Mapped[int | None] = mapped_column(ForeignKey("calendar_connections.id", ondelete="SET NULL"))
+    calendar_event_id: Mapped[str | None] = mapped_column(String(300))
+    idempotency_key: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[str | None] = mapped_column(Text)
+    outcome: Mapped[str | None] = mapped_column(String(20))
+    next_steps: Mapped[str | None] = mapped_column(Text)
+    draft_email_id: Mapped[int | None] = mapped_column(ForeignKey("outreach_messages.id", ondelete="SET NULL"))
+    draft_wa_id: Mapped[int | None] = mapped_column(ForeignKey("wa_messages.id", ondelete="SET NULL"))
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    lead: Mapped[Lead] = relationship()
+    institution: Mapped[Institution] = relationship()
+    contact: Mapped[Contact | None] = relationship()
+    organizer: Mapped[User | None] = relationship(foreign_keys=[organizer_id])
+
+
+class LinkedinItem(TimestampMixin, Base):
+    """LinkedIn assistance only: research notes, message drafts and content ideas. Nothing is sent automatically;
+    a person copies the text into LinkedIn and marks it done."""
+
+    __tablename__ = "linkedin_items"
+    __table_args__ = (
+        CheckConstraint("kind IN ('note', 'connection_draft', 'message_draft', 'content_suggestion')", name="kind_valid"),
+        CheckConstraint("status IN ('draft', 'approved', 'done', 'discarded')", name="status_valid"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[int | None] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    institution_id: Mapped[int | None] = mapped_column(ForeignKey("institutions.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    facts_used: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    quality: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    generated_by: Mapped[str] = mapped_column(String(20), nullable=False, default="rules")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

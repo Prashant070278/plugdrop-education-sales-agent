@@ -24,6 +24,7 @@ def to_out(db: DB, tasks: list[Task]) -> list[TaskOut]:
     for t in tasks:
         o = TaskOut.model_validate(t)
         o.institution_name = names.get(t.institution_id) if t.institution_id else None
+        o.source_activity_subject = t.source_activity.subject if t.source_activity else None
         out.append(o)
     return out
 
@@ -41,7 +42,11 @@ def list_tasks(
     lead_id: int | None = None,
     institution_id: int | None = None,
 ) -> Page[TaskOut]:
-    stmt = apply_search(select(Task).options(selectinload(Task.owner)), params.q, [Task.title, Task.description])
+    stmt = apply_search(
+        select(Task).options(selectinload(Task.owner), selectinload(Task.source_activity)),
+        params.q,
+        [Task.title, Task.description],
+    )
     if status:
         stmt = stmt.where(Task.status == status.value)
     if priority:
@@ -82,8 +87,26 @@ def create_task(body: TaskCreate, user: CurrentUser, db: DB, request: Request) -
     if task.lead_id and not task.institution_id:
         lead = db.get(Lead, task.lead_id)
         task.institution_id = lead.institution_id if lead else None
+    # Every task has an owner, a due date, a reason and the activity it came from (Stage 4).
+    if task.due_at is None:
+        task.due_at = (datetime.now(UTC) + timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    task.reason = "manual"
     db.add(task)
     db.flush()
+    from app.engagement.coordination import record_activity
+
+    src = record_activity(
+        db,
+        "task",
+        f"Task created by {user.full_name}: {task.title}",
+        lead_id=task.lead_id,
+        institution_id=task.institution_id,
+        contact_id=task.contact_id,
+        user_id=user.id,
+        details={"task_id": task.id, "reason": "manual"},
+        is_demo=task.is_demo,
+    )
+    task.source_activity_id = src.id
     audit.record(db, user, "create", "task", task.id, audit.snapshot(task), request)
     db.commit()
     db.refresh(task)
