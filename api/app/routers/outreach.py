@@ -294,7 +294,7 @@ def _followups_due(db: DB) -> list[tuple[OutreachMessage, datetime]]:
     horizon = datetime.now(UTC) + timedelta(days=1)
     for m in rows:
         prev = next((x for x in m.sequence.messages if x.kind == "sequence" and x.step == m.step - 1), None)
-        if prev and prev.sent_at and prev.status in S.SENT_LIKE:
+        if prev and prev.sent_at and prev.status in S.SENT_ONLY:
             due = prev.sent_at + timedelta(days=m.sequence.spacing_days[m.step - 1])
             if due <= horizon:
                 out.append((m, due))
@@ -493,7 +493,7 @@ def stop(seq_id: int, body: StopIn, user: CurrentUser, db: DB) -> SequenceDetail
 
 
 class MessageEdit(BaseModel):
-    subject: str = Field(min_length=3, max_length=200)
+    subject: str = Field(min_length=3, max_length=200, pattern=r"^[^\r\n]+$")
     body: str = Field(min_length=20, max_length=10000)
 
 
@@ -538,6 +538,14 @@ def schedule(message_id: int, body: ScheduleIn, user: CurrentUser, db: DB) -> Se
 def send_now(message_id: int, user: CurrentUser, db: DB) -> SequenceDetail:
     m = _msg(db, message_id)
     S.send_now(db, m, user)
+    return _after(db, m)
+
+
+@router.post("/messages/{message_id}/mark-sent", response_model=SequenceDetail)
+def mark_sent(message_id: int, user: CurrentUser, db: DB) -> SequenceDetail:
+    """Draft-only mode: confirm the draft was sent from the mailbox, so follow-ups can be scheduled."""
+    m = _msg(db, message_id)
+    S.mark_sent(db, m, user)
     return _after(db, m)
 
 

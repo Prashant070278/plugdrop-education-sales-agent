@@ -21,60 +21,98 @@ LABELS = (
     "unclear",
 )
 OPT_OUT = re.compile(
-    r"\b(unsubscribe|remove me|take me off|stop (?:emailing|contacting|sending)|do not (?:email|contact)|don't (?:email|contact)|opt(?:-| )?out|no more emails)\b",
+    r"\bunsubscribe\b|\bopt(?:-| )?out\b|\bremove (?:me|us|my|our)\b|\btake (?:me|us|my|our)\b[^.\n]{0,30}\boff\b"
+    r"|\bstop (?:e-?mailing|mailing|sending|contacting|spamming)\b|\bspam(?:ming)?\b|\bno (?:more|further) (?:e-?mails?|mails?)\b"
+    r"|\b(?:do not|don'?t|dont|never|pls don'?t|please do not)\s+(?:e-?mail|mail|contact|spam|write to)\b"
+    r"|\b(?:do not|don'?t|dont|never|pls don'?t|please do not)\s+send\b[^.\n]{0,25}\b(?:e-?mails?|mails?|messages?)\b"
+    r"|\bnot to (?:e-?mail|mail|contact)\b|\bmail mat\b|\bmat bhej",
+    re.I,
+)
+# Automatic replies: out-of-office notices and "we have received your query" acknowledgements. These don't stop
+# follow-ups (they only pause them), because no person has read the email yet.
+AUTO = re.compile(
+    r"out of (?:the )?office|out of station|automatic reply|auto-?reply|auto-?generated|automated (?:reply|response|message)"
+    r"|on (?:annual |medical )?leave|on vacation|travell?ing (?:till|until|and)|away (?:until|till|from)"
+    r"|limited access to (?:e-?mail|mail)|do not reply to this|(?:query|enquiry|inquiry|request|mail|e-?mail) has been received"
+    r"|we have received your (?:e-?mail|mail|query|enquiry|inquiry|message)|ticket (?:no|number|id)\b"
+    r"|will (?:get back|respond|revert) to you (?:within|shortly|soon)",
     re.I,
 )
 RULES: list[tuple[str, re.Pattern[str]]] = [
-    (
-        "out_of_office",
-        re.compile(
-            r"out of (?:the )?office|automatic reply|auto-?reply|on (?:annual )?leave|away (?:until|from)|limited access to email",
-            re.I,
-        ),
-    ),
-    (
-        "not_interested",
-        re.compile(
-            r"not interested|no thanks|no, thank|not (?:a )?(?:fit|relevant)|we(?:'re| are) not looking|please don't|already have a (?:solution|vendor|provider)",
-            re.I,
-        ),
-    ),
+    ("out_of_office", AUTO),
     (
         "referral",
         re.compile(
-            r"(?:right|best) person|(?:contact|reach out to|speak (?:to|with)|copying|cc'?ing|looping in)\s+(?:my colleague|[A-Z][a-z]+)|forwarded (?:this|your)",
-            re.I,
-        ),
-    ),
-    (
-        "meeting_request",
-        re.compile(
-            r"(?:book|schedule|set up|arrange)\s+(?:a\s+)?(?:call|meeting|demo|time)|(?:available|free) (?:on|next|this)|send (?:me )?(?:an? )?(?:invite|calendar)|let'?s (?:talk|meet|speak)|monday|tuesday|wednesday|thursday|friday",
+            r"(?:right|best|correct|concerned) person|forwarded (?:this|your|the)|marked (?:it |this |your mail )?to|looping in|copying|cc'?ing|copied"
+            r"|(?:contact|reach out to|write to|connect with|speak (?:to|with)|get in touch with)\s+(?:my colleague|our|the|mr\.?|ms\.?|mrs\.?|dr\.?|prof\.?|[A-Z][a-z]+)"
+            r"[^.\n]{0,40}(?:head|in-?charge|officer|director|registrar|team|department|office|manager|colleague|coordinator)|\bin-?charge\b",
             re.I,
         ),
     ),
     (
         "not_now",
         re.compile(
-            r"not (?:right )?now|next (?:quarter|year|term|semester|month)|after (?:our|the) intake|later (?:this|in the) year|no budget|revisit|circle back|check back",
+            r"not (?:right )?now|not at (?:present|the moment|this (?:time|stage))|currently not|abhi nahi|baad me"
+            r"|next (?:quarter|year|term|semester|month|session|academic year|admission cycle|cycle)"
+            r"|after (?:our |the )?(?:intake|admissions?|session|exams?|semester|counselling)|later (?:this|in the) year"
+            r"|no budget|revisit|circle back|check back|(?:connect|contact|reach out|get in touch|touch base|write) (?:again )?(?:after|in|later|next)",
+            re.I,
+        ),
+    ),
+    (
+        "not_interested",
+        re.compile(
+            r"not interested|no thanks|no, thank|not (?:a )?(?:fit|relevant)|not required|not needed|no requirement|no need"
+            r"|(?:we(?:'re| are)|i(?:'m| am)) not looking|not for us|already (?:using|use|have|working with|got)|we use [A-Z]"
+            r"|(?:signed|gone|going|tied up) with (?:another|a different|an?other) (?:vendor|provider|company)|another vendor"
+            r"|have (?:our|an) (?:own|in-?house)|in-?house (?:team|solution|system)|not in a position|we will pass",
+            re.I,
+        ),
+    ),
+    (
+        "meeting_request",
+        re.compile(
+            r"(?:book|schedule|set up|arrange|fix)\s+(?:a\s+)?(?:call|meeting|demo|time|slot)|(?:available|free) (?:on|next|this|tomorrow|today)"
+            r"|send (?:me |us )?(?:an? )?(?:invite|calendar|meeting link)|let'?s (?:talk|meet|speak|connect)|call me|give (?:me |us )?a (?:call|ring)"
+            r"|(?:connect|talk|speak|meet|discuss) (?:on|at|tomorrow|today|this|next)|\btomorrow\b|day after|\b\d{1,2}(?::\d{2})?\s?(?:am|pm)\b"
+            r"|google meet|zoom|teams (?:call|link|meeting)|monday|tuesday|wednesday|thursday|friday|saturday",
             re.I,
         ),
     ),
     (
         "needs_information",
         re.compile(
-            r"more (?:information|details|info)|send (?:me|over|us) (?:some|more|a|the)|brochure|pricing|how (?:does|would|much)|case stud|what does it cost|which (?:crm|systems)",
+            r"more (?:information|details|info)|(?:share|send)\b[^.\n]{0,25}\b(?:details|information|info|brochure|deck|presentation|proposal|quotation|quote|commercials|pricing|price|cost|demo video|video|company profile|client list|references)"
+            r"|brochure|pricing|commercials|quotation|how (?:does|do|would|much|can)|what (?:does|is|are) (?:it|the)|case stud|which (?:crm|systems)",
             re.I,
         ),
     ),
     (
         "interested",
         re.compile(
-            r"interested|sounds (?:good|interesting|useful)|tell me more|keen to|would like to (?:learn|know|hear)|happy to (?:chat|talk|explore)",
+            r"interest(?:ed|ing)|sounds (?:good|interesting|useful)|tell me more|keen|would like to (?:learn|know|hear|understand|see)"
+            r"|happy to (?:chat|talk|explore|connect|discuss)|let'?s (?:explore|discuss)|yes,? please|go ahead|looks (?:useful|good|relevant)"
+            r"|will (?:connect|get in touch|contact you|call you|reach out)",
             re.I,
         ),
     ),
 ]
+
+QUOTE_START = re.compile(
+    r"^\s*(?:On\b.{0,200}?\bwrote:|-{2,}\s*Original Message\s*-{2,}|_{5,}|From:\s.+|Sent from my\b.*|-----\s*Forwarded)",
+    re.I | re.S | re.M,
+)
+
+
+def strip_quoted(body: str, own_lines: tuple[str, ...] = ()) -> str:
+    """Only the prospect's own words: cut the quoted original email, '>' lines and our own footer lines."""
+    m = QUOTE_START.search(body)
+    text = body[: m.start()] if m and m.start() > 0 else body
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith(">"))
+    for own in own_lines:
+        if own:
+            text = text.replace(own, " ")
+    return text.strip() or body.strip()
 
 
 @dataclass
@@ -86,14 +124,18 @@ class Classification:
     source: str
 
 
-def classify_rules(subject: str, body: str) -> Classification:
-    text = f"{subject}\n{body}"
-    opt = bool(OPT_OUT.search(text))
-    if opt:
+def classify_rules(subject: str, body: str, own_lines: tuple[str, ...] = ()) -> Classification:
+    text = f"{re.sub(r'^(?:re|fw|fwd)\s*:\s*', '', subject, flags=re.I)}\n{strip_quoted(body, own_lines)}"
+    if OPT_OUT.search(text):
         return Classification("not_interested", 95, True, "Asked not to be contacted again.", "rules")
     for label, pattern in RULES:
         if pattern.search(text):
-            return Classification(label, 70, False, f"Matched wording for '{label.replace('_', ' ')}'.", "rules")
+            summary = (
+                "Automatic reply (out of office or acknowledgement) — follow-ups are paused, not stopped."
+                if label == "out_of_office"
+                else f"Matched wording for '{label.replace('_', ' ')}'."
+            )
+            return Classification(label, 70, False, summary, "rules")
     return Classification("unclear", 30, False, "No clear intent detected; please read the reply.", "rules")
 
 
@@ -113,8 +155,11 @@ TOOL = {
 }
 
 
-def classify(subject: str, body: str, settings: Settings, client: httpx.Client | None = None) -> Classification:
-    rules = classify_rules(subject, body)
+def classify(
+    subject: str, body: str, settings: Settings, client: httpx.Client | None = None, own_lines: tuple[str, ...] = ()
+) -> Classification:
+    rules = classify_rules(subject, body, own_lines)
+    body = strip_quoted(body, own_lines)
     if not settings.anthropic_api_key or settings.outreach_writer == "rules":
         return rules
     client = client or httpx.Client(base_url=settings.anthropic_base_url, timeout=settings.anthropic_timeout_seconds)
@@ -127,7 +172,11 @@ def classify(subject: str, body: str, settings: Settings, client: httpx.Client |
                 "max_tokens": 300,
                 "tools": [TOOL],
                 "tool_choice": {"type": "tool", "name": "classify_reply"},
-                "system": "Classify the reply to a B2B sales email. Use 'unclear' when unsure. Never guess opt_out=false if they ask to stop.",
+                "system": (
+                    "Classify the reply to a B2B sales email sent to an Indian university or college. Use 'unclear' when "
+                    "unsure. Use 'out_of_office' for any automatic reply, including 'we have received your query' "
+                    "acknowledgements. Set opt_out=true whenever they ask not to be emailed or contacted again."
+                ),
                 "messages": [{"role": "user", "content": json.dumps({"subject": subject, "body": body[:6000]})}],
             },
         )

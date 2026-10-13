@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -23,19 +24,116 @@ import httpx
 from app.config import Settings
 
 HEDGES = ("looks like", "seems", "appears", "may ", "might", "if i've", "correct me", "i understand", "it sounds")
-FALSE_RELATIONSHIP = (
-    "as we discussed",
-    "as promised",
-    "following up on our conversation",
-    "great speaking",
-    "great to meet",
-    "per our call",
-    "we spoke",
-    "when we met",
-    "you requested",
-    "our partnership",
-    "as you know",
+FALSE_RELATIONSHIP = [
+    r"as (?:we )?discussed",
+    r"as promised",
+    r"following up on our (?:conversation|call|meeting|discussion|chat)",
+    r"(?:great|nice|good|lovely) (?:speaking|talking|chatting|to meet|meeting|to speak|to talk|to catch up)",
+    r"per our (?:call|conversation|discussion|meeting)",
+    r"\bwe (?:spoke|talked|met|discussed)\b",
+    r"when we (?:met|spoke|talked)",
+    r"last time we",
+    r"you requested",
+    r"(?:our|your) (?:existing |ongoing |long-standing )?(?:partnership|relationship|association)",
+    r"as you know",
+    r"remember me",
+    r"(?:was|were|been|i was|i've been) (?:referred|recommended|introduced)",
+    r"(?:your|a) colleague (?:suggested|recommended|referred|asked|mentioned)",
+    r"\byou (?:signed up|downloaded|registered|subscribed|asked for|enquired)\b",
+    r"\breconnect|\bcatch up again|touching base again",
+]
+# Only true after an earlier email or a reply, so blocked in a first email.
+FIRST_EMAIL_ONLY = [
+    r"(?:my|our) (?:previous|last|earlier) (?:e-?mail|note|message)",
+    r"following up on my",
+    r"\bthanks? (?:you )?for (?:your interest|reaching out|getting (?:in touch|back)|your (?:enquiry|inquiry|reply|response)|contacting us)",
+]
+HYPE = re.compile(
+    r"game[\s-]*chang|revolution|disrupt|cutting[\s-]*edge|best[\s-]*in[\s-]*class|world[\s-]*class|skyrocket|guarantee"
+    r"|\b\d+x\b|unparalleled|unmatched|state[\s-]*of[\s-]*the[\s-]*art|next[\s-]*gen|world'?s first|#1\b|number one|supercharg"
+    r"|!!|\bmagic(?:al)?\b|mind[\s-]*blowing|incredible|amazing|unbeatable|no[\s-]*brainer",
+    re.I,
 )
+NUM_WORDS = re.compile(
+    r"\bper ?cent\b|\bdoubl(?:e|ed|es|ing)\b|\btripl(?:e|ed|es|ing)\b|\btwice\b|\bhalve[sd]?\b|\bhalf the\b|\b\w+-fold\b"
+    r"|\blakhs?\b|\bcrores?\b|\b(?:hundreds|thousands|millions) of\b|\broi\b|return on investment|pays? for itself|cost savings?",
+    re.I,
+)
+CUSTOMER_REF = re.compile(
+    r"case study|we (?:have )?worked with|our (?:client|customer|partner)s?\b|customers? like|clients? like|trusted by|used by"
+    r"|(?:universities|colleges|institutions|institutes|schools|campuses|groups) (?:like|such as)|already use(?:s)? (?:us|plugdrop)"
+    r"|work(?:s|ed|ing)? with (?:many|several|leading|top|other)"
+    r"|\b(?:institutions|universities|colleges|customers|clients|schools|teams) (?:use|using|rely on|trust|choose|chose|love)\b",
+    re.I,
+)
+INSTITUTION_NAME = re.compile(
+    r"\b(?:[A-Z][\w.&'-]*\s+){1,5}(?:University|College|Institute|Vidyapeeth|Vishwavidyalaya|Academy|School)\b"
+    r"|\b(?:University|Institute|College) of(?:\s+[A-Z][\w.&'-]*){1,4}"
+)
+INTEGRATION = re.compile(r"\bintegrat\w*|\bconnects? (?:with|to|into) your\b|\bplugs? (?:into|in to)\b|\bsyncs? with\b", re.I)
+PRODUCT_CLAIM = re.compile(
+    r"\b(?:plugdrop(?:'s)?|our (?:agents?|ai|voice ai|platform|product|solution|system|bot|tool|software)|it|we)\b[^.?!\n]{0,80}?"
+    r"\b(?:can|will|does|handles?|answers?|speaks?|supports?|integrates?|reduces?|increases?|improves?|cuts?|boosts?|automates?"
+    r"|delivers?|offers?|provides?|enables?|guarantees?|ensures?|eliminates?|replaces?|understands?)\b",
+    re.I,
+)
+# Internal research vocabulary must never reach a prospect.
+INTERNAL_NOTES = re.compile(
+    r"\btrigger\s*:|\binference\b|\bpositioning\b|\(verify|\bunverified\b|\(reported\)|->|\bnot found\b|\bworkbook\b"
+    r"|\bPD-\d{3}\b|opportunity signal|buying role|\bconfidence (?:high|medium|low)\b|\bresearch (?:note|fact) F\d+",
+    re.I,
+)
+INVISIBLE = re.compile("[\u200b-\u200f\u2060\ufeff\u00ad]")
+STOP = set(
+    [
+        "that",
+        "this",
+        "with",
+        "your",
+        "from",
+        "have",
+        "will",
+        "they",
+        "them",
+        "their",
+        "there",
+        "what",
+        "when",
+        "which",
+        "about",
+        "would",
+        "could",
+        "should",
+        "into",
+        "also",
+        "each",
+        "more",
+        "most",
+        "such",
+        "than",
+        "then",
+        "very",
+        "just",
+        "only",
+        "some",
+        "many",
+        "over",
+        "been",
+        "were",
+        "being",
+        "does",
+        "done",
+        "here",
+        "make",
+        "made",
+    ]
+)
+
+
+def _normalise(text: str) -> str:
+    return INVISIBLE.sub("", unicodedata.normalize("NFKC", text))
+
+
 CATEGORY_PHRASES = {
     "enquiry_volume": (
         "your admissions team handles a large volume of enquiries each intake",
@@ -157,11 +255,17 @@ def _pick(content: list[Content], kind: str, use_case: str | None) -> Content | 
     return found[0] if found else None
 
 
+def usable_facts(facts: list[Fact]) -> list[Fact]:
+    """Facts the deterministic writer can turn into a sentence with approved wording. Research notes in other
+    categories are never pasted into an email: they are internal notes, not customer-facing language."""
+    return sorted((f for f in facts if f.category in CATEGORY_PHRASES), key=lambda f: (f.level != "verified_fact", f.category))
+
+
 def _observation(ctx: Context, f: Fact) -> str:
-    verified, inferred = CATEGORY_PHRASES.get(f.category, (f.text[0].lower() + f.text[1:], f.text[0].lower() + f.text[1:]))
+    verified, inferred = CATEGORY_PHRASES[f.category]
     if f.level == "verified_fact":
-        src = f" ({_host(f.source_url)})" if f.source_url else ""
-        return f"I saw that {verified}{src}."
+        host = _host(f.source_url)
+        return f"I saw on {host} that {verified}." if host else f"I read that {verified}."
     return f"From what I've read, it looks like {inferred} — please correct me if I've got that wrong."
 
 
@@ -174,9 +278,9 @@ class RuleWriter:
     def write(self, ctx: Context) -> Draft:
         if ctx.kind == "reply":
             return self._reply(ctx)
-        facts = sorted(ctx.facts, key=lambda f: (f.level != "verified_fact", f.category not in CATEGORY_PHRASES))
-        if not facts:
+        if not ctx.facts:
             raise WriterError("No approved research facts for this institution. Approve and push research findings first.")
+        facts = usable_facts(ctx.facts)
         vp = _pick(ctx.content, "value_prop", ctx.use_case)
         cta = _pick(ctx.content, "cta", ctx.use_case)
         if vp is None or cta is None:
@@ -186,14 +290,25 @@ class RuleWriter:
             )
         inst = ctx.institution
         if ctx.step == 1:
-            fact = facts[0]
             subject = (ctx.template or {}).get("subject") or USE_CASE_SUBJECT.get(ctx.use_case or "", "Admissions at {inst}")
-            body = f"Dear {ctx.first_name},\n\n{_observation(ctx, fact)}\n\n{vp.body}\n\n{cta.body}"
+            if facts:
+                fact = facts[0]
+                opening = _observation(ctx, fact)
+                why = f"Step 1 leads with the strongest fact ({fact.category}, {fact.level}) and the approved value proposition for {ctx.use_case}."
+            else:
+                # No fact has approved wording: a person writes the opening line from the research note.
+                fact = sorted(ctx.facts, key=lambda f: f.level != "verified_fact")[0]
+                opening = f"[EDIT: one specific, true sentence about {inst}, based on research fact {fact.id}]"
+                why = (
+                    f"None of the approved facts can be worded automatically, so the opening line is left for you. "
+                    f'Research note {fact.id}: "{fact.text}" — write it in your own words; don\'t paste the note.'
+                )
+            body = f"Dear {ctx.first_name},\n\n{opening}\n\n{vp.body}\n\n{cta.body}"
             used_f, used_c = [fact.id], [vp.id, cta.id]
-            why = f"Step 1 leads with the strongest fact ({fact.category}, {fact.level}) and the approved value proposition for {ctx.use_case}."
         else:
             # Follow-ups use a different fact where possible and stay shorter.
-            fact = facts[min(ctx.step - 1, len(facts) - 1)]
+            # A different fact from the first email; if there isn't one, don't repeat the same observation.
+            follow_fact: Fact | None = facts[ctx.step - 1] if len(facts) >= ctx.step else None
             prev_subject = (
                 ctx.previous[0]["subject"] if ctx.previous else USE_CASE_SUBJECT.get(ctx.use_case or "", "Admissions at {inst}")
             )
@@ -207,7 +322,8 @@ class RuleWriter:
                 cta,
             )
             case = _pick(ctx.content, "case_study", ctx.use_case)
-            middle = case.body if (case and ctx.step == 2) else _observation(ctx, fact)
+            use_case_study = bool(case and ctx.step == 2)
+            middle = case.body if (case and use_case_study) else (_observation(ctx, follow_fact) if follow_fact else "")
             if ctx.step >= ctx.policy.get("max_attempts", 3):
                 body = (
                     f"Dear {ctx.first_name},\n\nI don't want to crowd your inbox, so this is my last note on this. "
@@ -215,9 +331,10 @@ class RuleWriter:
                 )
             else:
                 body = f"Dear {ctx.first_name},\n\nFollowing up on my note about enquiries at {inst}. {middle}\n\n{alt_cta.body}"
-            used_f = [fact.id] if middle != (case.body if case else None) else []
-            used_c = [alt_cta.id] + ([case.id] if case and middle == case.body else [])
-            why = f"Follow-up {ctx.step} adds {'an approved case study' if used_c[1:] else 'a different fact'} and a softer call to action."
+            body = body.replace(" \n\n", "\n\n")
+            used_f = [follow_fact.id] if (follow_fact and not use_case_study) else []
+            used_c = [alt_cta.id] + ([case.id] if case and use_case_study else [])
+            why = f"Follow-up {ctx.step} adds {'an approved case study' if use_case_study else 'a different fact' if follow_fact else 'a softer call to action'}."
         return Draft(
             subject=subject.replace("{inst}", inst)[:120],
             body=body.replace("{inst}", inst),
@@ -265,6 +382,8 @@ Hard rules:
 - Explain ONE business problem and ONE possible outcome. Product capabilities, outcomes, customer names and case studies may come ONLY from approved content.
 - No numbers, percentages, ROI or savings claims unless they appear in a provided fact or approved content.
 - Never imply an existing relationship or previous conversation. No hype words.
+- Fact texts are internal research notes: never quote or paste them, never mention words like "trigger", "inference",
+  "verify" or "positioning", and never name other institutions or vendors unless the fact or approved content does.
 - End with one clear, low-friction question as the call to action.
 - Do NOT write a signature or an unsubscribe line; they are added automatically.
 - Plain text, professional, specific to the institution, within the word limit."""
@@ -361,7 +480,7 @@ def get_writer(settings: Settings) -> RuleWriter | ClaudeWriter:
 # ---------------------------------------------------------------------------
 # quality gate
 # ---------------------------------------------------------------------------
-NUM_RE = re.compile(r"\b\d[\d,.]*%?|\b\d+x\b", re.I)
+NUM_RE = re.compile(r"\b\d+(?:\.\d+)?x\b|\b\d[\d,]*(?:\.\d+)?%?", re.I)
 MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
 TIME_DATE_RE = re.compile(
     rf"\b\d{{1,2}}(?::\d{{2}})?\s?(?:am|pm)\b|\b\d{{1,2}}:\d{{2}}\b|\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{MONTHS})[a-z]*\b"
@@ -370,8 +489,20 @@ TIME_DATE_RE = re.compile(
 )
 
 
+def _nums(text: str) -> set[str]:
+    return {n.lower().rstrip(",.") for n in NUM_RE.findall(text)}
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z][a-z'-]{3,}", text.lower()) if w not in STOP}
+
+
 def quality_check(ctx: Context, subject: str, full_body: str, facts_used: list[str], content_used: list[str]) -> dict[str, Any]:
-    """Return {"passed": bool, "checks": [...]}. Blocking failures prevent approval."""
+    """Return {"passed": bool, "checks": [...]}. Blocking failures prevent approval.
+
+    The checks are a safety net, not a guarantee: a person still reads and approves every email."""
+    raw_subject = subject
+    subject, full_body = _normalise(subject), _normalise(full_body)
     body = strip_footer(ctx, full_body)
     text = f"{subject}\n{body}"
     low = text.lower()
@@ -380,6 +511,7 @@ def quality_check(ctx: Context, subject: str, full_body: str, facts_used: list[s
         + [c.body + " " + c.title for c in ctx.content]
         + [ctx.institution, ctx.contact_name]
     )
+    approved_text = " ".join([c.body for c in ctx.content] + [f.text + " " + (f.excerpt or "") for f in ctx.facts])
     used_content = [c for c in ctx.content if c.id in content_used]
     used_facts = [f for f in ctx.facts if f.id in facts_used]
     checks: list[dict[str, Any]] = []
@@ -408,26 +540,67 @@ def quality_check(ctx: Context, subject: str, full_body: str, facts_used: list[s
             "Use wording such as 'it looks like…' for source-supported inferences",
             blocking=False,
         )
-    banned = [p for p in ctx.policy["banned_phrases"] if p.lower() in low]
-    add("hype", "No hype or banned phrases", not banned, ", ".join(banned))
-    rel = [p for p in FALSE_RELATIONSHIP if p in low]
+    notes = sorted({m.group(0) for m in INTERNAL_NOTES.finditer(text)})
+    add("internal", "No internal research notes", not notes, "Rewrite in plain language: " + ", ".join(notes))
+    banned = [p for p in ctx.policy["banned_phrases"] if p.lower() in low] + [m.group(0) for m in HYPE.finditer(text)]
+    add("hype", "No hype or banned phrases", not banned, ", ".join(sorted(set(banned))))
+    rel_patterns = FALSE_RELATIONSHIP + (FIRST_EMAIL_ONLY if (ctx.kind == "sequence" and ctx.step == 1) else [])
+    if ctx.kind == "sequence" and ctx.step > 1:
+        rel_patterns = rel_patterns + [FIRST_EMAIL_ONLY[2]]  # "thanks for your interest/reply" only fits a reply
+    rel = [m.group(0) for p in rel_patterns for m in [re.search(p, low)] if m]
     add("relationship", "Doesn't imply an existing relationship", not rel, ", ".join(rel))
     # Times and calendar dates (meeting proposals) are not claims; strip them before checking numbers.
     claim_text = TIME_DATE_RE.sub(" ", text)
-    nums = [n for n in NUM_RE.findall(claim_text) if n.strip(",.") and n.strip(",.") not in sources]
-    add("numbers", "No unsupported numbers or ROI claims", not nums, "Unsupported: " + ", ".join(sorted(set(nums))))
+    source_nums = _nums(sources)
+    nums = sorted(n for n in _nums(claim_text) if n and n not in source_nums)
+    num_words = sorted(
+        {m.group(0).lower() for m in NUM_WORDS.finditer(claim_text)} - {w.lower() for w in NUM_WORDS.findall(sources)}
+    )
+    add(
+        "numbers",
+        "No unsupported numbers or ROI claims",
+        not nums and not num_words,
+        "Unsupported: " + ", ".join(nums + num_words),
+    )
     restricted = [
         t
         for t in ctx.policy["restricted_terms"]
         if re.search(rf"\b{re.escape(t.lower())}\b", low) and t.lower() not in sources.lower()
     ]
-    add("integrations", "No unapproved products, integrations or claims", not restricted, ", ".join(restricted))
-    case_words = re.search(r"case study|we (?:have )?worked with|our (?:client|customer)s?\b|customers? like", low)
+    integ = [m.group(0) for m in INTEGRATION.finditer(text) if not INTEGRATION.search(approved_text)]
+    add(
+        "integrations",
+        "No unapproved products, integrations or claims",
+        not restricted and not integ,
+        ", ".join(restricted + integ),
+    )
+    target = ctx.institution.lower()
+    others = sorted(
+        {
+            n.strip()
+            for n in INSTITUTION_NAME.findall(text)
+            if n.strip().lower() not in target and target not in n.strip().lower() and n.strip().lower() not in sources.lower()
+        }
+    )
+    case_words = CUSTOMER_REF.search(low)
     add(
         "case_study",
-        "Case studies only from the approved library",
-        not case_words or any(c.kind == "case_study" for c in used_content),
-        "Mentions a customer or case study that isn't approved content",
+        "Case studies and customer names only from the approved library",
+        not others and (not case_words or any(c.kind == "case_study" for c in used_content)),
+        "Mentions " + (", ".join(others) if others else "a customer or case study") + " that isn't in approved content",
+    )
+    approved_words = _words(approved_text)
+    unsupported_claims = []
+    for sentence in re.split(r"(?<=[.?!])\s+|\n+", body):
+        if PRODUCT_CLAIM.search(sentence) and not sentence.strip().endswith("?"):
+            w = _words(sentence)
+            if w and len(w & approved_words) / len(w) < 0.6:
+                unsupported_claims.append(sentence.strip()[:80])
+    add(
+        "claims",
+        "Product capabilities only from approved content",
+        not unsupported_claims,
+        "Use approved wording for: " + " | ".join(unsupported_claims),
     )
     add("cta", "Clear call to action (a question)", "?" in body, "End with one low-friction question")
     add(
@@ -440,7 +613,7 @@ def quality_check(ctx: Context, subject: str, full_body: str, facts_used: list[s
     add(
         "subject",
         "Clear subject line",
-        3 <= len(subject) <= 100 and "!" not in subject and not subject.isupper(),
-        "3–100 characters, no exclamation marks or all caps",
+        3 <= len(subject) <= 100 and "!" not in subject and not subject.isupper() and not re.search(r"[\r\n]", raw_subject),
+        "3–100 characters on one line, no exclamation marks or all caps",
     )
     return {"passed": all(c["passed"] for c in checks if c["blocking"]), "checks": checks}

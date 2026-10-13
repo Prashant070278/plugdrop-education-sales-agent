@@ -88,10 +88,17 @@ USE_CASE_RULES = [
 ]
 SIGNAL_RULES = [
     (r"admissions? (are |is )?open|intake|application(s)? (open|close)|last date", "intake_period"),
-    (r"vacanc|hiring|recruiting|walk-in interview", "hiring_admissions"),
+    (
+        r"(?:vacanc|hiring|recruiting|walk-in)[^.;]{0,60}counsell?or|counsell?ors?[^.;]{0,30}(?:vacanc|hiring|recruit)",
+        "hiring_admissions",
+    ),
     (r"new campus|campus (launch|opening)", "new_campus"),
     (r"new (course|programme|program)|launch(ed|es)? .*(course|programme|program)|co-branded program", "new_course"),
-    (r"\bcrm\b", "crm_initiative"),
+    # A CRM *change* (not merely having one): new, migrating, implementing, tender/RFP.
+    (
+        r"(?:new|migrat\w*|implement\w*|switch\w*|replac\w*|tender|rfp|evaluat\w*|select\w*)[^.;]{0,30}\bcrm\b|\bcrm\b[^.;]{0,20}(?:migration|implementation|tender|rfp|rollout|roll-out)",
+        "crm_initiative",
+    ),
     (r"digital transformation|erp (roll|implement)", "digital_transformation"),
     (r"campaign", "admissions_campaign"),
     (r"\d+\+?\s*(city )?(offices|campuses|centres|centers)|multi-campus|several campuses", "multi_campus"),
@@ -499,7 +506,8 @@ def import_workbook(db: Session, user: User, data: bytes, filename: str, dry_run
         for p in people.get(account, []):
             pp = parse_person(p.get("Person"))
             if pp["kind"] == "vacancy":
-                add_ev("signal", "hiring_admissions", f"Vacancy: {pp['label']}", to_url(s(p.get("Person Source")), main_src))
+                cat = "hiring_admissions" if re.search(r"counsell?or", pp["label"], re.I) else "other"
+                add_ev("signal", cat, f"Vacancy: {pp['label']}", to_url(s(p.get("Person Source")), main_src))
         relevance = s(sales.get("PlugDrop Relevance"))
         primary = classify(relevance, USE_CASE_RULES, "voice_enquiry_automation") if present(relevance) else None
         if primary:

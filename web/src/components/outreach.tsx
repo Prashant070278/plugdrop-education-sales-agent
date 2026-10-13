@@ -38,7 +38,7 @@ const REPLY: Record<ReplyLabel, [string, V]> = {
   not_now: ["Not now", "warning"],
   not_interested: ["Not interested", "danger"],
   referral: ["Referral", "secondary"],
-  out_of_office: ["Out of office", "muted"],
+  out_of_office: ["Out of office / auto-reply", "muted"],
   unclear: ["Unclear", "muted"],
 };
 export function ReplyLabelBadge({ value, optOut }: { value: ReplyLabel; optOut?: boolean }) {

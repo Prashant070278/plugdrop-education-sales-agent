@@ -273,6 +273,8 @@ def test_sending_limits_and_window_defer(rep, adm):
         designation="Head of Student Recruitment",
     )
     enable_sending(adm, per_domain=1)
+    p = adm.get("/api/outreach/policy").json()
+    assert adm.put("/api/outreach/policy", json={**p, "max_live_per_institution": 2}).status_code == 200
     s1, s2 = start(rep, lead, contact), start(rep, lead, c2)
     for s in (s1, s2):
         rep.post(f"/api/outreach/messages/{step(s)['id']}/approve")

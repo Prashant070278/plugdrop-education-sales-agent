@@ -10,7 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app import audit
@@ -44,6 +44,7 @@ log = logging.getLogger("plugdrop.outreach")
 LIVE = ("draft", "active")
 UNSENT = ("draft", "approved", "scheduled", "blocked")
 SENT_LIKE = ("sent", "delivered", "drafted_in_mailbox")
+SENT_ONLY = ("sent", "delivered")  # actually left the mailbox (a mailbox draft only counts once someone sends it)
 EARLY_STAGES = ("new", "researched", "qualified", "outreach_ready")
 STOP_LABELS = {"replied", "opted_out", "bounced", "suppressed", "not_a_fit", "cancelled", "lead_closed"}
 
@@ -163,6 +164,20 @@ def eligibility(db: Session, lead: Lead, contact: Contact) -> list[str]:
     )
     if live:
         problems.append(f"Contact already has an outreach sequence in progress (#{live})")
+    else:
+        others = list(
+            db.scalars(
+                select(OutreachSequence.id).where(
+                    OutreachSequence.institution_id == lead.institution_id, OutreachSequence.status.in_(LIVE)
+                )
+            )
+        )
+        cap = load_policy(db)["max_live_per_institution"]
+        if len(others) >= cap:
+            problems.append(
+                f"{len(others)} other person(s) at this institution already have outreach in progress "
+                f"(#{', #'.join(map(str, others))}); the policy allows {cap} at a time"
+            )
     return problems
 
 
@@ -405,7 +420,7 @@ def schedule(db: Session, msg: OutreachMessage, user: User, when: datetime | Non
     if when and when < datetime.now(UTC) - timedelta(minutes=5):
         raise HTTPException(422, "Scheduled time is in the past")
     prev = _previous(seq, msg)
-    if when is None and prev is not None and prev.status not in SENT_LIKE:
+    if when is None and prev is not None and prev.status not in SENT_ONLY:
         when = None  # scheduled automatically once the previous email goes out
     elif when is None:
         anchor = prev.sent_at if prev and prev.sent_at else datetime.now(UTC)
@@ -580,7 +595,9 @@ def presend(db: Session, msg: OutreachMessage, policy: dict[str, Any], now: date
     if mb is None or mb.status != "active":
         return "block", "Mailbox missing or not approved"
     prev = _previous(seq, msg)
-    if prev is not None and prev.status not in SENT_LIKE:
+    if prev is not None and prev.status == "drafted_in_mailbox":
+        return "defer", "Waiting for the previous email to be sent from the mailbox (then press 'I've sent it')"
+    if prev is not None and prev.status not in SENT_ONLY:
         return "defer", "Waiting for the previous email"
     if not in_window(now, policy):
         return "defer", "Outside the sending window"
@@ -630,7 +647,7 @@ def dispatch_message(db: Session, msg: OutreachMessage, settings: Settings | Non
         msg.last_error = reason
         if reason == "Outside the sending window":
             msg.scheduled_for = next_window(now, policy)
-        elif reason == "Waiting for the previous email":
+        elif reason.startswith("Waiting for the previous email"):
             msg.scheduled_for = None
         else:
             msg.scheduled_for = (
@@ -645,9 +662,18 @@ def dispatch_message(db: Session, msg: OutreachMessage, settings: Settings | Non
     mb = seq.mailbox
     assert mb is not None
     mode, why = effective_mode(mb, policy, s)
-    # Duplicate-send protection: mark as sending and commit before talking to the provider.
-    msg.status, msg.send_attempts = "sending", msg.send_attempts + 1
+    # Duplicate-send protection: only a 'scheduled' email may move to 'sending', atomically, and that is committed
+    # before talking to the provider. A second click or a second worker finds nothing to send.
+    claimed = db.execute(
+        update(OutreachMessage)
+        .where(OutreachMessage.id == msg.id, OutreachMessage.status == "scheduled")
+        .values(status="sending", send_attempts=OutreachMessage.send_attempts + 1)
+    ).rowcount
     db.commit()
+    if claimed != 1:
+        db.refresh(msg)
+        return msg.status
+    db.refresh(msg)
     prev = _previous(seq, msg)
     out = OutgoingEmail(
         from_email=mb.email_address,
@@ -662,7 +688,11 @@ def dispatch_message(db: Session, msg: OutreachMessage, settings: Settings | Non
     try:
         prov = provider_for(db, mb)
         res = prov.send(out) if mode == "send" else prov.create_draft(out)
-    except EmailProviderError as e:
+    except Exception as e:  # noqa: BLE001 - never leave an email stuck in 'sending'
+        if not isinstance(e, EmailProviderError):
+            msg.status, msg.last_error = "failed", f"Unexpected error: {e}"[:500]
+            log_event(db, seq, msg, "send_failed", None, activity=("note", f"Email to {msg.to_email} failed"), error=str(e))
+            return msg.status
         if e.needs_reauth:
             mb.status, mb.last_error = "needs_reauth", str(e)[:500]
         if e.transient and msg.send_attempts < 3:
@@ -692,21 +722,7 @@ def dispatch_message(db: Session, msg: OutreachMessage, settings: Settings | Non
             to=msg.to_email,
             step=msg.step,
         )
-        lead = seq.lead
-        if msg.kind == "sequence" and lead.stage in EARLY_STAGES:
-            old = lead.stage
-            lead.stage, lead.stage_changed_at = "contacted", now
-            db.add(
-                Activity(
-                    activity_type="status_change",
-                    subject=f"Stage changed: {old.replace('_', ' ')} → contacted",
-                    body="First outreach email sent",
-                    lead_id=lead.id,
-                    institution_id=lead.institution_id,
-                    details={"from": old, "to": "contacted"},
-                    is_demo=lead.is_demo,
-                )
-            )
+        _after_sent(db, seq, msg, now, policy)
     else:
         msg.status = "drafted_in_mailbox"
         log_event(
@@ -719,13 +735,55 @@ def dispatch_message(db: Session, msg: OutreachMessage, settings: Settings | Non
             reason=why,
             provider=mb.provider,
         )
+    return msg.status
+
+
+def _after_sent(db: Session, seq: OutreachSequence, msg: OutreachMessage, now: datetime, policy: dict[str, Any]) -> None:
+    """Bookkeeping once an email has really left the mailbox: lead stage, next follow-up, sequence completion."""
+    lead = seq.lead
+    if msg.kind == "sequence" and lead.stage in EARLY_STAGES:
+        old = lead.stage
+        lead.stage, lead.stage_changed_at = "contacted", now
+        db.add(
+            Activity(
+                activity_type="status_change",
+                subject=f"Stage changed: {old.replace('_', ' ')} → contacted",
+                body="First outreach email sent",
+                lead_id=lead.id,
+                institution_id=lead.institution_id,
+                details={"from": old, "to": "contacted"},
+                is_demo=lead.is_demo,
+            )
+        )
     nxt = next((m for m in seq.messages if m.kind == "sequence" and m.step == msg.step + 1), None)
     if nxt and nxt.status == "scheduled" and nxt.scheduled_for is None:
         nxt.scheduled_for = next_window(now + timedelta(days=seq.spacing_days[nxt.step - 1]), policy)
-    finished = all(m.status in (*SENT_LIKE, "bounced", "cancelled") for m in seq.messages if m.kind == "sequence")
+    finished = all(m.status in (*SENT_ONLY, "bounced", "cancelled") for m in seq.messages if m.kind == "sequence")
     if msg.kind == "sequence" and finished and seq.status == "active":
         seq.status = "completed"
-    return msg.status
+
+
+def mark_sent(db: Session, msg: OutreachMessage, user: User) -> OutreachMessage:
+    """Draft-only mode: a person confirms they sent the draft from the mailbox. Only then do follow-ups start counting."""
+    if msg.status != "drafted_in_mailbox":
+        raise HTTPException(409, "Only an email waiting in the mailbox drafts can be marked as sent")
+    now = datetime.now(UTC)
+    msg.status, msg.sent_at = "sent", now
+    log_event(
+        db,
+        msg.sequence,
+        msg,
+        "marked_sent",
+        user,
+        activity=("email", f"Email sent: {msg.subject}"),
+        body=msg.body,
+        to=msg.to_email,
+        step=msg.step,
+    )
+    _after_sent(db, msg.sequence, msg, now, load_policy(db))
+    audit.record(db, user, "mark_sent", "outreach_message", msg.id, {"step": msg.step})
+    db.commit()
+    return msg
 
 
 def _last_thread(seq: OutreachSequence) -> str | None:
@@ -765,12 +823,26 @@ def dispatch_due(db: Session, settings: Settings | None = None, now: datetime | 
 
 def send_now(db: Session, msg: OutreachMessage, user: User, settings: Settings | None = None) -> OutreachMessage:
     if msg.status not in ("approved", "scheduled", "blocked"):
-        raise HTTPException(409, "Approve the email first")
+        raise HTTPException(409, "This email isn't approved, or it's already being sent")
     _assert_sendable_sequence(msg.sequence, msg)
-    msg.status, msg.scheduled_for = "scheduled", datetime.now(UTC)
+    done = db.execute(
+        update(OutreachMessage)
+        .where(OutreachMessage.id == msg.id, OutreachMessage.status.in_(("approved", "scheduled", "blocked")))
+        .values(status="scheduled", scheduled_for=datetime.now(UTC))
+    ).rowcount
+    if done != 1:
+        db.rollback()
+        raise HTTPException(409, "This email is already being sent")
     log_event(db, msg.sequence, msg, "send_now_requested", user)
     db.commit()
-    locked = db.scalars(select(OutreachMessage).where(OutreachMessage.id == msg.id).with_for_update()).one()
+    locked = db.scalars(
+        select(OutreachMessage)
+        .where(OutreachMessage.id == msg.id, OutreachMessage.status == "scheduled")
+        .with_for_update(skip_locked=True)
+    ).first()
+    if locked is None:
+        db.rollback()
+        raise HTTPException(409, "This email is already being sent")
     status = dispatch_message(db, locked, settings)
     db.commit()
     if status == "blocked":
@@ -867,7 +939,8 @@ def handle_inbound(
             ).first()
     if seq is None:
         return None  # not related to outreach; ignore (no personal mail is stored)
-    c = classify(subject, body, s)
+    pol = load_policy(db)
+    c = classify(subject, body, s, own_lines=(pol["opt_out_line"],))
     reply = EmailReply(
         sequence_id=seq.id,
         message_id=msg.id if msg else None,

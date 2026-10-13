@@ -8,6 +8,7 @@ and demo rows are flagged with ``is_demo`` so they can be found and removed.
 from __future__ import annotations
 
 import enum
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -258,6 +259,13 @@ class Campus(TimestampMixin, Base):
     institution: Mapped[Institution] = relationship(back_populates="campuses")
 
 
+ROLE_NAME = re.compile(
+    r"\b(?:office|team|cell|desk|helpdesk|help desk|centre|center|department|admissions?|registrar|director|chancellor"
+    r"|university|college|principal|dean|head|in-?charge|manager|officer|secretary|coordinator|enquir(?:y|ies))\b",
+    re.I,
+)
+
+
 class Contact(TimestampMixin, Base):
     __tablename__ = "contacts"
     __table_args__ = (
@@ -292,8 +300,13 @@ class Contact(TimestampMixin, Base):
 
     @property
     def greeting_name(self) -> str:
-        """How an email addresses this person: "Prof. Chopade" when a salutation is set, else the first name."""
-        return f"{self.salutation} {self.last_name}" if self.salutation and self.last_name else self.first_name
+        """How an email addresses this person: "Prof. Chopade" with a salutation, "Sir/Madam" for an office or role
+        mailbox (e.g. "Admissions Office"), otherwise the first name."""
+        if self.salutation and self.last_name:
+            return f"{self.salutation} {self.last_name}"
+        if not self.last_name and ROLE_NAME.search(self.first_name):
+            return "Sir/Madam"
+        return self.first_name
 
 
 class Lead(TimestampMixin, Base):

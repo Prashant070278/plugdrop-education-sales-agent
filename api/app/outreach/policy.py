@@ -20,6 +20,9 @@ DEFAULT_POLICY: dict[str, Any] = {
     "spacing_days": [0, 4, 7],  # days after the previous email for each step
     "global_daily_limit": 150,
     "per_domain_daily_limit": 3,  # protects one institution from receiving many emails in a day
+    # How many people at one institution may be in an outreach sequence at the same time. Senior staff compare
+    # notes; several identical cold emails to one university at once look like spam.
+    "max_live_per_institution": 1,
     "send_window": {"start_hour": 9, "end_hour": 17, "timezone": "Asia/Kolkata", "weekdays_only": True},
     "max_words_first": 130,
     "max_words_follow_up": 90,
@@ -93,6 +96,7 @@ def save_policy(db: Session, value: dict[str, Any], user: User) -> dict[str, Any
     for k, lo, hi in (
         ("global_daily_limit", 1, 2000),
         ("per_domain_daily_limit", 1, 50),
+        ("max_live_per_institution", 1, 10),
         ("max_words_first", 40, 250),
         ("max_words_follow_up", 30, 200),
         ("ooo_postpone_days", 1, 30),

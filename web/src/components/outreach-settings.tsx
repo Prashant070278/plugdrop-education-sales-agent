@@ -61,6 +61,7 @@ function Policy() {
           </Field>
           <Field label="Out-of-office: pause follow-ups (days)" htmlFor="p-ooo"><Input id="p-ooo" type="number" disabled={d} value={f.ooo_postpone_days} onChange={(e) => set("ooo_postpone_days", num(e.target.value))} /></Field>
           <Field label="Emails per day, all mailboxes" htmlFor="p-gl"><Input id="p-gl" type="number" disabled={d} value={f.global_daily_limit} onChange={(e) => set("global_daily_limit", num(e.target.value))} /></Field>
+          <Field label="People at one institution in outreach at once" htmlFor="p-li" hint="Default 1: senior staff compare notes"><Input id="p-li" type="number" min={1} max={10} disabled={d} value={f.max_live_per_institution} onChange={(e) => set("max_live_per_institution", num(e.target.value))} /></Field>
           <Field label="Emails per day to one institution" htmlFor="p-dl"><Input id="p-dl" type="number" disabled={d} value={f.per_domain_daily_limit} onChange={(e) => set("per_domain_daily_limit", num(e.target.value))} /></Field>
           <Field label="Word limit: first / follow-up" htmlFor="p-w1">
             <div className="flex gap-2"><Input id="p-w1" type="number" disabled={d} value={f.max_words_first} onChange={(e) => set("max_words_first", num(e.target.value))} /><Input aria-label="Follow-up word limit" type="number" disabled={d} value={f.max_words_follow_up} onChange={(e) => set("max_words_follow_up", num(e.target.value))} /></div>

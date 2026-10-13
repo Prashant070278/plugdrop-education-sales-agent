@@ -88,6 +88,12 @@ function MessageCard({ m, seq, act }: {
           </>
         )}
         {stopped && open && <p className="text-xs text-muted-foreground">Follow-ups stopped — this email won&apos;t be sent.</p>}
+        {m.status === "drafted_in_mailbox" && (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-pdpurple/30 bg-pdpurple-bg/40 p-3 text-sm">
+            <span className="min-w-0 flex-1">This email is waiting in the drafts folder of {seq.mailbox?.email_address ?? "the mailbox"}. Send it from there, then confirm here — follow-ups only start counting once it has really been sent.</span>
+            <Button size="sm" onClick={() => act(`${base}/mark-sent`, { method: "POST" }, "Marked as sent — follow-ups are now scheduled")}><Check />I&apos;ve sent it</Button>
+          </div>
+        )}
         {(g.rationale || g.facts_used?.length) && (
           <div>
             <button type="button" className="text-xs text-primary hover:underline" onClick={() => setShowWhy(!showWhy)}>{showWhy ? "Hide" : "Why this email?"}</button>

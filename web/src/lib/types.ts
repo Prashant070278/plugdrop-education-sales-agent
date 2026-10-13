@@ -263,7 +263,7 @@ export interface SuppressedView {
 }
 export interface OutreachPolicy {
   sending_mode: "draft_only" | "send"; max_attempts: number; spacing_days: number[]; global_daily_limit: number;
-  per_domain_daily_limit: number; send_window: { start_hour: number; end_hour: number; timezone: string; weekdays_only: boolean };
+  per_domain_daily_limit: number; max_live_per_institution: number; send_window: { start_hour: number; end_hour: number; timezone: string; weekdays_only: boolean };
   max_words_first: number; max_words_follow_up: number; ooo_postpone_days: number; sender_company: string; signature: string;
   opt_out_line: string; banned_phrases: string[]; restricted_terms: string[]; external_sending_allowed?: boolean;
 }

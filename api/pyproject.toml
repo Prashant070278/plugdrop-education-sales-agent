@@ -14,6 +14,8 @@ ignore = ["E501", "B008", "S101", "S311", "S105", "S106", "S608"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S"]
+# pytest fixtures shared by importing them from another test module
+"tests/test_outreach_hardening.py" = ["F811"]
 
 [tool.mypy]
 python_version = "3.12"
