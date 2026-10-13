@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2, CircleDashed, Clock, Plus, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DemoBadge, EmptyState, ErrorState, Field, PageHeader, Pagination } from "@/components/common";
 import { ConsentDialog } from "@/components/forms";
+import { OutreachSettings } from "@/components/outreach-settings";
 import { useCan, useUser } from "@/components/auth";
 import { useToast } from "@/components/toast";
 import { api, useApi } from "@/lib/api";
@@ -266,12 +267,15 @@ function DemoData() {
 export default function SettingsPage() {
   const isAdmin = useCan("admin");
   const isManager = useCan("manager");
+  const [tab, setTab] = useState("integrations");
+  useEffect(() => { const t = new URLSearchParams(window.location.search).get("tab"); if (t) setTab(t); }, []);
   return (
     <>
-      <PageHeader eyebrow="Workspace" title="Settings" description="Integrations, users, compliance and audit." />
-      <Tabs defaultValue="integrations">
+      <PageHeader eyebrow="Workspace" title="Settings" description="Integrations, outreach, users, compliance and audit." />
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="mb-2 h-auto flex-wrap">
           <TabsTrigger value="integrations">Integrations</TabsTrigger>
+          <TabsTrigger value="outreach">Outreach</TabsTrigger>
           <TabsTrigger value="suppression">Opt-outs</TabsTrigger>
           <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
           {isManager && <TabsTrigger value="audit">Audit log</TabsTrigger>}
@@ -279,6 +283,7 @@ export default function SettingsPage() {
           <TabsTrigger value="demo">Demo data</TabsTrigger>
         </TabsList>
         <TabsContent value="integrations"><Integrations /></TabsContent>
+        <TabsContent value="outreach"><OutreachSettings /></TabsContent>
         <TabsContent value="suppression"><Suppression /></TabsContent>
         <TabsContent value="campaigns"><Campaigns /></TabsContent>
         {isManager && <TabsContent value="audit"><AuditLog /></TabsContent>}

@@ -8,6 +8,7 @@ and demo rows are flagged with ``is_demo`` so they can be found and removed.
 from __future__ import annotations
 
 import enum
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -258,6 +259,13 @@ class Campus(TimestampMixin, Base):
     institution: Mapped[Institution] = relationship(back_populates="campuses")
 
 
+ROLE_NAME = re.compile(
+    r"\b(?:office|team|cell|desk|helpdesk|help desk|centre|center|department|admissions?|registrar|director|chancellor"
+    r"|university|college|principal|dean|head|in-?charge|manager|officer|secretary|coordinator|enquir(?:y|ies))\b",
+    re.I,
+)
+
+
 class Contact(TimestampMixin, Base):
     __tablename__ = "contacts"
     __table_args__ = (
@@ -270,6 +278,7 @@ class Contact(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id", ondelete="RESTRICT"), nullable=False, index=True)
+    salutation: Mapped[str | None] = mapped_column(String(30))  # e.g. "Prof.", "Dr." - used in "Dear Prof. Sharma"
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     designation: Mapped[str | None] = mapped_column(String(200))
@@ -280,6 +289,7 @@ class Contact(TimestampMixin, Base):
     verification_status: Mapped[str] = mapped_column(String(20), nullable=False, default=VerificationStatus.unverified.value)
     source: Mapped[str | None] = mapped_column(String(200))
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[str | None] = mapped_column(Text)
     is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     institution: Mapped[Institution] = relationship(back_populates="contacts")
@@ -287,6 +297,16 @@ class Contact(TimestampMixin, Base):
     @property
     def full_name(self) -> str:
         return f"{self.first_name} {self.last_name}".strip()
+
+    @property
+    def greeting_name(self) -> str:
+        """How an email addresses this person: "Prof. Chopade" with a salutation, "Sir/Madam" for an office or role
+        mailbox (e.g. "Admissions Office"), otherwise the first name."""
+        if self.salutation and self.last_name:
+            return f"{self.salutation} {self.last_name}"
+        if not self.last_name and ROLE_NAME.search(self.first_name):
+            return "Sir/Madam"
+        return self.first_name
 
 
 class Lead(TimestampMixin, Base):
@@ -655,6 +675,7 @@ class ResearchContactCandidate(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False)
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id", ondelete="CASCADE"), nullable=False)
+    salutation: Mapped[str | None] = mapped_column(String(30))
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     designation: Mapped[str | None] = mapped_column(String(200))
@@ -695,3 +716,290 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: AI outreach agent
+# ---------------------------------------------------------------------------
+
+
+class MailboxProvider(StrEnum):
+    mock = "mock"
+    gmail = "gmail"
+    microsoft = "microsoft"
+
+
+class MailboxStatus(StrEnum):
+    pending_approval = "pending_approval"  # connected, waiting for an admin to approve its use
+    active = "active"
+    needs_reauth = "needs_reauth"
+    disabled = "disabled"
+
+
+class SequenceStatus(StrEnum):
+    draft = "draft"  # drafts generated, nothing approved yet
+    active = "active"  # at least one step approved/scheduled/sent
+    stopped = "stopped"  # see stop_reason
+    completed = "completed"  # every step sent
+
+
+class StopReason(StrEnum):
+    replied = "replied"
+    opted_out = "opted_out"
+    bounced = "bounced"
+    suppressed = "suppressed"
+    not_a_fit = "not_a_fit"
+    cancelled = "cancelled"
+    lead_closed = "lead_closed"
+
+
+class MessageStatus(StrEnum):
+    draft = "draft"
+    approved = "approved"
+    scheduled = "scheduled"
+    sending = "sending"
+    drafted_in_mailbox = "drafted_in_mailbox"  # draft-only mode: placed in the mailbox for a person to send
+    sent = "sent"
+    delivered = "delivered"
+    bounced = "bounced"
+    failed = "failed"
+    cancelled = "cancelled"
+    blocked = "blocked"  # pre-send check refused (suppression, limits, …)
+
+
+class ReplyLabel(StrEnum):
+    interested = "interested"
+    meeting_request = "meeting_request"
+    needs_information = "needs_information"
+    not_now = "not_now"
+    not_interested = "not_interested"
+    referral = "referral"
+    out_of_office = "out_of_office"
+    unclear = "unclear"
+
+
+class ContentKind(StrEnum):
+    case_study = "case_study"
+    claim = "claim"
+    cta = "cta"
+    value_prop = "value_prop"
+
+
+class ContentStatus(StrEnum):
+    draft = "draft"
+    approved = "approved"
+    retired = "retired"
+
+
+class Mailbox(TimestampMixin, Base):
+    """A connected sending mailbox. OAuth tokens are stored encrypted; passwords are never stored."""
+
+    __tablename__ = "mailboxes"
+    __table_args__ = (
+        _check("provider", MailboxProvider),
+        _check("status", MailboxStatus),
+        Index("uq_mailboxes_provider_email", "provider", func.lower(text("email_address")), unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    email_address: Mapped[str] = mapped_column(String(254), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    is_shared: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    connected_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    authorization_note: Mapped[str] = mapped_column(String(500), nullable=False)
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=MailboxStatus.pending_approval.value)
+    sending_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    daily_send_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=40)
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(String(200)), nullable=False, default=list)
+    token_ciphertext: Mapped[str | None] = mapped_column(Text)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sync_cursor: Mapped[str | None] = mapped_column(String(500))
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(500))
+
+    owner: Mapped[User | None] = relationship(foreign_keys=[owner_id])
+
+
+class ContentItem(TimestampMixin, Base):
+    """Approved case studies, claims and calls to action the writer may use. Nothing else may be claimed."""
+
+    __tablename__ = "content_items"
+    __table_args__ = (_check("kind", ContentKind), _check("status", ContentStatus))
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    use_cases: Mapped[list[str]] = mapped_column(ARRAY(String(50)), nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=ContentStatus.draft.value)
+    source_note: Mapped[str | None] = mapped_column(String(500))
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class EmailTemplate(TimestampMixin, Base):
+    __tablename__ = "email_templates"
+    __table_args__ = (
+        CheckConstraint("step BETWEEN 1 AND 10", name="step_range"),
+        _check("status", ContentStatus),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    step: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    use_case: Mapped[str | None] = mapped_column(String(50))
+    subject: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=ContentStatus.draft.value)
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class OutreachSequence(TimestampMixin, Base):
+    __tablename__ = "outreach_sequences"
+    __table_args__ = (
+        _check("status", SequenceStatus),
+        CheckConstraint(
+            "stop_reason IS NULL OR stop_reason IN ('replied','opted_out','bounced','suppressed','not_a_fit','cancelled','lead_closed')",
+            name="stop_reason_valid",
+        ),
+        # One live sequence per contact at a time.
+        Index("uq_sequences_live_contact", "contact_id", unique=True, postgresql_where=text("status IN ('draft', 'active')")),
+        Index("ix_sequences_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), nullable=False, index=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id", ondelete="CASCADE"), nullable=False, index=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    research_run_id: Mapped[int | None] = mapped_column(ForeignKey("research_runs.id", ondelete="SET NULL"))
+    mailbox_id: Mapped[int | None] = mapped_column(ForeignKey("mailboxes.id", ondelete="SET NULL"))
+    use_case: Mapped[str | None] = mapped_column(String(50))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=SequenceStatus.draft.value)
+    stop_reason: Mapped[str | None] = mapped_column(String(20))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    spacing_days: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list)
+    facts: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    institution: Mapped[Institution] = relationship()
+    contact: Mapped[Contact] = relationship()
+    lead: Mapped[Lead] = relationship()
+    mailbox: Mapped[Mailbox | None] = relationship()
+    messages: Mapped[list[OutreachMessage]] = relationship(back_populates="sequence", order_by="OutreachMessage.step")
+    replies: Mapped[list[EmailReply]] = relationship(back_populates="sequence", order_by="EmailReply.received_at")
+
+
+class OutreachMessage(TimestampMixin, Base):
+    __tablename__ = "outreach_messages"
+    __table_args__ = (
+        _check("status", MessageStatus),
+        # Duplicate-send protection: one message per step per sequence, and a unique idempotency key.
+        UniqueConstraint("sequence_id", "step", "kind", name="uq_outreach_messages_step"),
+        UniqueConstraint("idempotency_key", name="uq_outreach_messages_idempotency"),
+        Index("ix_outreach_messages_due", "status", "scheduled_for"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sequence_id: Mapped[int] = mapped_column(ForeignKey("outreach_sequences.id", ondelete="CASCADE"), nullable=False, index=True)
+    step: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="sequence")  # sequence | reply
+    status: Mapped[str] = mapped_column(String(25), nullable=False, default=MessageStatus.draft.value)
+    to_email: Mapped[str] = mapped_column(String(254), nullable=False)
+    subject: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_by: Mapped[str] = mapped_column(String(30), nullable=False)
+    generation: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)  # facts/content used, rationale
+    quality: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)  # last quality-check result
+    edited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    planned_offset_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider: Mapped[str | None] = mapped_column(String(20))
+    provider_message_id: Mapped[str | None] = mapped_column(String(300))
+    thread_id: Mapped[str | None] = mapped_column(String(300))
+    idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    send_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+
+    sequence: Mapped[OutreachSequence] = relationship(back_populates="messages")
+
+
+class EmailReply(Base):
+    __tablename__ = "email_replies"
+    __table_args__ = (
+        CheckConstraint(
+            "label IN ('interested','meeting_request','needs_information','not_now','not_interested','referral','out_of_office','unclear')",
+            name="label_valid",
+        ),
+        UniqueConstraint("provider_message_id", name="uq_email_replies_provider_message"),
+        Index("ix_email_replies_attention", "handled", "received_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sequence_id: Mapped[int | None] = mapped_column(ForeignKey("outreach_sequences.id", ondelete="CASCADE"), index=True)
+    message_id: Mapped[int | None] = mapped_column(ForeignKey("outreach_messages.id", ondelete="SET NULL"))
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
+    mailbox_id: Mapped[int | None] = mapped_column(ForeignKey("mailboxes.id", ondelete="SET NULL"))
+    provider_message_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    from_email: Mapped[str] = mapped_column(String(254), nullable=False)
+    subject: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    label: Mapped[str] = mapped_column(String(30), nullable=False, default=ReplyLabel.unclear.value)
+    label_confidence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    label_source: Mapped[str] = mapped_column(String(20), nullable=False, default="rules")  # rules | claude | human
+    opt_out: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    summary: Mapped[str | None] = mapped_column(String(500))
+    handled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    handled_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    sequence: Mapped[OutreachSequence | None] = relationship(back_populates="replies")
+
+
+class EmailEvent(Base):
+    """Append-only log of every outreach action and delivery result."""
+
+    __tablename__ = "email_events"
+    __table_args__ = (Index("ix_email_events_sequence", "sequence_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sequence_id: Mapped[int | None] = mapped_column(ForeignKey("outreach_sequences.id", ondelete="CASCADE"))
+    message_id: Mapped[int | None] = mapped_column(ForeignKey("outreach_messages.id", ondelete="SET NULL"))
+    event: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    actor: Mapped[User | None] = relationship()
+
+
+class MockMail(Base):
+    """Mailbox used by the mock email provider (tests and demos). Nothing here ever leaves the system."""
+
+    __tablename__ = "mock_mail"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    mailbox_id: Mapped[int] = mapped_column(ForeignKey("mailboxes.id", ondelete="CASCADE"), nullable=False, index=True)
+    folder: Mapped[str] = mapped_column(String(20), nullable=False)  # drafts | sent | inbox
+    message_id: Mapped[str] = mapped_column(String(300), nullable=False, unique=True)
+    thread_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    in_reply_to: Mapped[str | None] = mapped_column(String(300))
+    from_email: Mapped[str] = mapped_column(String(254), nullable=False)
+    to_email: Mapped[str] = mapped_column(String(254), nullable=False)
+    subject: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    delivery: Mapped[str | None] = mapped_column(String(20))  # delivered | bounced
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -48,3 +48,36 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+
+  api-runtime-deps:
+    # The Docker image installs only requirements.txt; make sure the app imports with exactly that.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -c "import app.main, app.research.workbook, app.outreach.providers.oauth_mail; print('imports ok')"
+
+  docker:
+    # Builds the real images, starts the stack and runs the same checks the team runs locally.
+    runs-on: ubuntu-latest
+    needs: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create .env for the test run
+        run: |
+          cp .env.example .env
+          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci-$(openssl rand -hex 8)/" .env
+          sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env
+          sed -i "s/^SEED_PASSWORD=.*/SEED_PASSWORD=ci-$(openssl rand -hex 8)/" .env
+          sed -i "s/^TOKEN_ENCRYPTION_KEY=.*/TOKEN_ENCRYPTION_KEY=$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())')/" .env
+      - run: ./scripts/docker-smoke-test.sh
+      - if: failure()
+        run: docker compose logs --tail 200
+      - if: always()
+        run: docker compose down -v

@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { use, useState } from "react";
-import { ArrowRightLeft, Building2, CalendarClock, Check, Microscope, Pencil, Plus, MessageSquarePlus } from "lucide-react";
+import { ArrowRightLeft, Building2, CalendarClock, Check, MailPlus, Microscope, Pencil, Plus, MessageSquarePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
@@ -10,10 +10,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DemoBadge, ErrorState, PageHeader, PriorityBadge, StageBadge } from "@/components/common";
 import { ActivityDialog, OpportunityDialog, OwnerSelect, ResearchDialog, StageDialog, TaskDialog } from "@/components/forms";
 import { AuditList, Timeline } from "@/components/timeline";
+import { SequenceStatusBadge, StartOutreachDialog } from "@/components/outreach";
 import { useToast } from "@/components/toast";
 import { api, useApi } from "@/lib/api";
 import { date, dateTime, label, money } from "@/lib/format";
-import { LEAD_STAGES, type Activity, type Contact, type Lead, type Opportunity, type Page, type Research, type Task } from "@/lib/types";
+import { LEAD_STAGES, type Activity, type Contact, type Lead, type Opportunity, type OutreachSequence, type Page, type Research, type Task } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 function StageTrack({ stage }: { stage: Lead["stage"] }) {
@@ -42,7 +43,8 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
   const { data: opps, mutate: mutOpps } = useApi<Page<Opportunity>>("/opportunities", { lead_id: id, page_size: 50 });
   const { data: research, mutate: mutResearch } = useApi<Research[]>(`/leads/${id}/research`);
   const { data: contacts } = useApi<Page<Contact>>(lead ? "/contacts" : null, { institution_id: lead?.institution.id, page_size: 100 });
-  const [dialog, setDialog] = useState<null | "stage" | "activity" | "task" | "opp" | "research">(null);
+  const { data: seqs } = useApi<Page<OutreachSequence>>("/outreach/sequences", { lead_id: id, page_size: 20 });
+  const [dialog, setDialog] = useState<null | "stage" | "activity" | "task" | "opp" | "research" | "outreach">(null);
   const [editOpp, setEditOpp] = useState<Opportunity | undefined>();
   const [editTask, setEditTask] = useState<Task | undefined>();
   const [editing, setEditing] = useState(false);
@@ -74,6 +76,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
       <div className="mb-2 text-sm"><Link href="/leads" className="text-muted-foreground hover:underline">Leads</Link></div>
       <PageHeader eyebrow={`Lead #${lead.id}`} title={lead.institution.name}
         actions={<>
+          <Button variant="outline" onClick={() => setDialog("outreach")}><MailPlus />Start outreach</Button>
           <Button variant="outline" onClick={() => setDialog("activity")}><MessageSquarePlus />Log activity</Button>
           <Button variant="outline" onClick={() => { setEditTask(undefined); setDialog("task"); }}><CalendarClock />Add task</Button>
           <Button onClick={() => setDialog("stage")}><ArrowRightLeft />Move stage</Button>
@@ -86,6 +89,16 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
           <span>· In {label(lead.stage)} since {date(lead.stage_changed_at)}</span>
           {lead.lost_reason && <span>· Lost: {lead.lost_reason}</span>}
         </div>
+        {!!seqs?.items.length && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Outreach:</span>
+            {seqs.items.map((q) => (
+              <Link key={q.id} href={`/outreach/sequences/${q.id}`} className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 hover:bg-muted">
+                {q.contact_name} <SequenceStatusBadge status={q.status} reason={q.stop_reason} />
+              </Link>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
@@ -187,6 +200,7 @@ export default function LeadDetailPage({ params }: { params: Promise<{ id: strin
       <TaskDialog open={dialog === "task"} onOpenChange={(o) => !o && setDialog(null)} initial={editTask} link={{ lead_id: lead.id, institution_id: lead.institution.id, contact_id: lead.primary_contact?.id }} onSaved={refreshAll} />
       <OpportunityDialog open={dialog === "opp"} onOpenChange={(o) => !o && setDialog(null)} lead={lead} initial={editOpp} onSaved={refreshAll} />
       <ResearchDialog open={dialog === "research"} onOpenChange={(o) => !o && setDialog(null)} institutionId={lead.institution.id} leadId={lead.id} onSaved={refreshAll} />
+      <StartOutreachDialog open={dialog === "outreach"} onOpenChange={(o) => setDialog(o ? "outreach" : null)} leadId={lead.id} />
     </>
   );
 }

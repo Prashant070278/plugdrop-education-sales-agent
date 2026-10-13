@@ -71,7 +71,7 @@ function CandidateRow({ c, onSet }: { c: ResearchCandidate; onSet: (s: ReviewSta
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">{c.full_name}</span>
+            <span className="font-medium">{c.salutation ? `${c.salutation} ` : ""}{c.full_name}</span>
             {c.buying_role_label && <Badge variant="secondary">{c.buying_role_label}</Badge>}
             <Badge variant={c.verification_status === "verified" ? "success" : "muted"}>{label(c.verification_status)}</Badge>
           </div>
@@ -120,6 +120,16 @@ export default function ReviewPage({ params }: { params: Promise<{ id: string }>
       mutate(updated, { revalidate: false });
     } catch (e) { toast("error", e instanceof Error ? e.message : "Review failed"); }
   };
+  const approveAllPeople = () => {
+    const ids = run.candidates.filter((c) => c.review_status === "pending" && !c.pushed_at);
+    if (!ids.length) { toast("error", "No people waiting for review"); return; }
+    review({ candidates: Object.fromEntries(ids.map((c) => [c.id, "approved"])) });
+  };
+  const approveSourced = () => {
+    const ids = run.evidence.filter((e) => e.evidence_level !== "hypothesis" && e.review_status === "pending" && !e.pushed_at);
+    if (!ids.length) { toast("error", "Nothing waiting for review"); return; }
+    review({ evidence: Object.fromEntries(ids.map((e) => [e.id, "approved"])) });
+  };
   const approveVerified = () => {
     const ids = run.evidence.filter((e) => e.evidence_level === "verified_fact" && e.review_status === "pending" && !e.pushed_at);
     if (!ids.length) { toast("error", "No pending verified facts"); return; }
@@ -154,7 +164,10 @@ export default function ReviewPage({ params }: { params: Promise<{ id: string }>
         {run.is_stale && <Badge variant="warning">Stale — re-run recommended</Badge>}
         {run.pushed_at && <Badge variant="success">Pushed {relative(run.pushed_at)}</Badge>}
         <span>Researched {run.finished_at ? dateTime(run.finished_at) : "—"}</span>
-        <span>· {s.documents_reviewed ?? 0} sources · {s.reasoner_model ?? "—"} · ${Number(run.cost_usd).toFixed(4)}</span>
+        {s.workbook
+          ? <span>· From the team&apos;s research workbook ({s.workbook.file}, account {s.workbook.account_id})</span>
+          : <span>· {s.documents_reviewed ?? 0} sources · {s.reasoner_model ?? "—"} · ${Number(run.cost_usd).toFixed(4)}</span>}
+        {s.on_hold && <Badge variant="warning">On hold in the workbook — don&apos;t contact yet</Badge>}
         <Link href={`/institutions/${run.institution.id}`} className="text-primary hover:underline">Institution profile</Link>
       </div>
 
@@ -172,6 +185,13 @@ export default function ReviewPage({ params }: { params: Promise<{ id: string }>
                 <div><div className="eyebrow mb-1">Why it fits</div><p>{s.fit_summary}</p></div>
                 <div className="flex gap-2"><Target className="mt-0.5 size-4 shrink-0 text-pdpurple-deep" /><div><span className="font-medium">Most relevant use case: {s.primary_use_case_label ?? "not determined"}.</span> <span className="text-muted-foreground">{s.use_case_rationale}</span></div></div>
                 <div className="flex gap-2 rounded-lg border border-pdpurple/30 bg-pdpurple-bg/50 p-3"><Lightbulb className="mt-0.5 size-4 shrink-0 text-pdpurple-deep" /><div><span className="font-medium">Recommended next action: </span>{s.next_action}</div></div>
+                {s.workbook && (
+                  <dl className="grid gap-x-4 gap-y-1.5 rounded-lg border p-3 sm:grid-cols-[auto_1fr]">
+                    {([["Opportunity signal", s.opportunity_signal], ["Best entry point", s.best_entry_point], ["Admissions model", s.admissions_model], ["Digital maturity", s.digital_maturity]] as const).filter(([, v]) => v).map(([k, v]) => (
+                      <div key={k} className="contents"><dt className="text-muted-foreground">{k}</dt><dd>{v}</dd></div>
+                    ))}
+                  </dl>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -179,7 +199,10 @@ export default function ReviewPage({ params }: { params: Promise<{ id: string }>
           <Card>
             <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
               <div><CardTitle>Evidence ({groups.signal.length + groups.profile.length + groups.use_case.length})</CardTitle><CardDescription className="mt-1">Approve what you have checked against the source. Only approved items go to the CRM.</CardDescription></div>
-              <Button size="sm" variant="outline" onClick={approveVerified} disabled={!run.is_latest}><CheckCheck />Approve all verified facts</Button>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={approveVerified} disabled={!run.is_latest}><CheckCheck />Approve all verified facts</Button>
+                {s.workbook && <Button size="sm" variant="outline" onClick={approveSourced} disabled={!run.is_latest} title="Approve every sourced item you have read (hypotheses excluded)"><CheckCheck />Approve all I&apos;ve checked</Button>}
+              </div>
             </CardHeader>
             <CardContent className="grid gap-5">
               {([["Buying signals and problems", groups.signal], ["Use cases", groups.use_case], ["Institution profile", groups.profile]] as const).map(([title, items]) => items.length > 0 && (
@@ -199,7 +222,10 @@ export default function ReviewPage({ params }: { params: Promise<{ id: string }>
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Decision-makers found ({run.candidates.length})</CardTitle><CardDescription className="mt-1">Emails are kept only when published on the cited page or verified by a licensed provider. Guessed addresses are discarded.</CardDescription></CardHeader>
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
+              <div><CardTitle>Decision-makers found ({run.candidates.length})</CardTitle><CardDescription className="mt-1">Emails are kept only when published on the cited page or verified by a licensed provider. Guessed addresses are discarded.</CardDescription></div>
+              {run.candidates.length > 0 && <Button size="sm" variant="outline" onClick={approveAllPeople} disabled={!run.is_latest}><CheckCheck />Approve all people</Button>}
+            </CardHeader>
             <CardContent>
               {run.candidates.length === 0 ? <p className="text-sm text-muted-foreground">No relevant people found.</p> : (
                 <ul className="grid gap-2">{run.candidates.map((c) => <CandidateRow key={c.id} c={c} onSet={(st) => review({ candidates: { [c.id]: st } })} />)}</ul>

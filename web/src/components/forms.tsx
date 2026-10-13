@@ -16,7 +16,7 @@ import {
 
 /* ---------- shared bits ---------- */
 
-function useSubmit<T>(fn: () => Promise<T>, onDone: (r: T) => void, success: string) {
+export function useSubmit<T>(fn: () => Promise<T>, onDone: (r: T) => void, success: string) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +37,7 @@ function useSubmit<T>(fn: () => Promise<T>, onDone: (r: T) => void, success: str
   return { busy, error, submit, setError };
 }
 
-function FormDialog({ open, onOpenChange, title, description, children, onSubmit, busy, error, submitLabel = "Save", wide }: {
+export function FormDialog({ open, onOpenChange, title, description, children, onSubmit, busy, error, submitLabel = "Save", wide }: {
   open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: string; children: ReactNode;
   onSubmit: (e: React.FormEvent) => void; busy: boolean; error: string | null; submitLabel?: string; wide?: boolean;
 }) {
@@ -183,7 +183,7 @@ export function InstitutionDialog({ open, onOpenChange, initial, onSaved }: {
 export function ContactDialog({ open, onOpenChange, initial, institution, onSaved }: {
   open: boolean; onOpenChange: (o: boolean) => void; initial?: Contact; institution?: { id: number; name: string }; onSaved: (c: Contact) => void;
 }) {
-  const blank = { first_name: "", last_name: "", designation: "", department: "", email: "", phone: "", linkedin_url: "", verification_status: "unverified", source: "", verified: false };
+  const blank = { salutation: "", notes: "", first_name: "", last_name: "", designation: "", department: "", email: "", phone: "", linkedin_url: "", verification_status: "unverified", source: "", verified: false };
   const [f, setF] = useState(blank);
   const [inst, setInst] = useState<{ id: number; name: string } | null>(null);
   const [dups, setDups] = useState<DuplicateMatch[]>([]);
@@ -192,12 +192,13 @@ export function ContactDialog({ open, onOpenChange, initial, institution, onSave
     setDups([]);
     setInst(initial ? initial.institution : institution ?? null);
     setF(initial ? {
+      salutation: initial.salutation ?? "", notes: initial.notes ?? "",
       first_name: initial.first_name, last_name: initial.last_name, designation: initial.designation ?? "", department: initial.department ?? "",
       email: initial.email ?? "", phone: initial.phone ?? "", linkedin_url: initial.linkedin_url ?? "",
       verification_status: initial.verification_status, source: initial.source ?? "", verified: false,
     } : blank);
   }, [open, initial, institution]); // eslint-disable-line react-hooks/exhaustive-deps
-  const set = (k: keyof typeof blank) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF((s) => ({ ...s, [k]: e.target.value }));
+  const set = (k: keyof typeof blank) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setF((s) => ({ ...s, [k]: e.target.value }));
   const checkDups = async () => {
     if (!f.first_name && !f.email) return;
     const r = await api<DuplicateMatch[]>(`/contacts/duplicates${qs({ first_name: f.first_name, last_name: f.last_name, institution_id: inst?.id, email: f.email, linkedin_url: f.linkedin_url, exclude_id: initial?.id })}`).catch(() => []);
@@ -206,7 +207,7 @@ export function ContactDialog({ open, onOpenChange, initial, institution, onSave
   const s = useSubmit(async () => {
     if (!inst) throw new Error("Choose an institution");
     const body = {
-      institution_id: inst.id, first_name: f.first_name, last_name: f.last_name, designation: f.designation, department: f.department,
+      institution_id: inst.id, salutation: f.salutation, notes: f.notes, first_name: f.first_name, last_name: f.last_name, designation: f.designation, department: f.department,
       email: f.email, phone: f.phone, linkedin_url: f.linkedin_url, verification_status: f.verification_status, source: f.source,
       ...(f.verified ? { last_verified_at: new Date().toISOString() } : {}),
     };
@@ -218,6 +219,11 @@ export function ContactDialog({ open, onOpenChange, initial, institution, onSave
       description="Use professional contact details only. Add a LinkedIn URL only where lawfully available.">
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Institution *" htmlFor="c-inst" className="sm:col-span-2"><InstitutionPicker id="c-inst" value={inst} onChange={setInst} /></Field>
+        <Field label="Salutation" htmlFor="c-sal" className="sm:col-span-2">
+          <Input id="c-sal" list="c-sal-list" placeholder="e.g. Prof., Dr., Mr., Ms." value={f.salutation} onChange={set("salutation")} />
+          <datalist id="c-sal-list">{["Prof.", "Dr.", "Mr.", "Ms.", "Mrs.", "Er.", "Shri", "Smt."].map((t) => <option key={t} value={t} />)}</datalist>
+          <span className="text-xs text-muted-foreground">With a salutation, emails open &ldquo;Dear {f.salutation || "Prof."} {f.last_name || "Sharma"}&rdquo;; without one, &ldquo;Dear {f.first_name || "first name"}&rdquo;.</span>
+        </Field>
         <Field label="First name *" htmlFor="c-first"><Input id="c-first" value={f.first_name} onChange={set("first_name")} onBlur={checkDups} /></Field>
         <Field label="Last name" htmlFor="c-last"><Input id="c-last" value={f.last_name} onChange={set("last_name")} onBlur={checkDups} /></Field>
         <Field label="Designation" htmlFor="c-desig"><Input id="c-desig" value={f.designation} onChange={set("designation")} /></Field>
@@ -227,6 +233,7 @@ export function ContactDialog({ open, onOpenChange, initial, institution, onSave
         <Field label="LinkedIn URL" htmlFor="c-li"><Input id="c-li" placeholder="https://linkedin.com/in/…" value={f.linkedin_url} onChange={set("linkedin_url")} onBlur={checkDups} /></Field>
         <Field label="Verification" htmlFor="c-ver"><Select id="c-ver" value={f.verification_status} onChange={set("verification_status")}>{VERIFICATION.map((v) => <option key={v} value={v}>{label(v)}</option>)}</Select></Field>
         <Field label="Source" htmlFor="c-src" className="sm:col-span-2"><Input id="c-src" value={f.source} onChange={set("source")} /></Field>
+        <Field label="Notes" htmlFor="c-notes" className="sm:col-span-2"><Textarea id="c-notes" value={f.notes} onChange={set("notes")} /></Field>
       </div>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.verified} onChange={(e) => setF((s) => ({ ...s, verified: e.target.checked }))} className="accent-[#6D28D9]" />I have verified these details today</label>
       <DuplicateWarning matches={dups} />

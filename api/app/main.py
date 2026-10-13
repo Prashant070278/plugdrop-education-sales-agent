@@ -20,6 +20,7 @@ from app.routers import (
     institutions,
     leads,
     opportunities,
+    outreach,
     research,
     settings,
     tasks,
@@ -68,6 +69,10 @@ def _start_worker() -> None:
         from app.research.service import start_embedded_worker
 
         start_embedded_worker(SessionLocal)
+    if get_settings().outreach_worker == "embedded":
+        from app.outreach.service import start_embedded_worker as start_outreach_worker
+
+        start_outreach_worker(SessionLocal)
 
 
 @app.get("/api/health", tags=["system"])
@@ -84,6 +89,7 @@ for r in (
     contacts,
     leads,
     opportunities,
+    outreach,
     research,
     activities,
     tasks,

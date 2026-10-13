@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, RefreshCw, RotateCcw, Save, XCircle } from "lucide-react";
+import { ChevronDown, ChevronRight, FileSpreadsheet, RefreshCw, RotateCcw, Save, Upload, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,7 +15,7 @@ import { useCan } from "@/components/auth";
 import { useToast } from "@/components/toast";
 import { api, useApi } from "@/lib/api";
 import { dateTime, label, relative } from "@/lib/format";
-import type { Page, ResearchConfig, ResearchJob, ResearchJobDetail, ResearchOverview, ResearchRunSummary } from "@/lib/types";
+import type { Page, ResearchConfig, ResearchJob, ResearchJobDetail, ResearchOverview, ResearchRunSummary, WorkbookImportReport } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 function Stat({ title, value, sub }: { title: string; value: React.ReactNode; sub?: string }) {
@@ -202,6 +202,84 @@ function Scoring() {
   );
 }
 
+function WorkbookImport({ onDone }: { onDone: () => void }) {
+  const toast = useToast();
+  const canImport = useCan("manager");
+  const [file, setFile] = useState<File | null>(null);
+  const [report, setReport] = useState<WorkbookImportReport | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async (dryRun: boolean) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const r = await api<WorkbookImportReport>(`/research/import-workbook?dry_run=${dryRun}`, { method: "POST", body });
+      setReport(r);
+      if (!dryRun) {
+        toast("success", `Imported ${r.results_created} researched institutions. Review each one before it reaches the CRM.`);
+        onDone();
+      }
+    } catch (e) { toast("error", e instanceof Error ? e.message : "Import failed"); } finally { setBusy(false); }
+  };
+  if (!canImport) return <EmptyState title="Managers and admins can import research workbooks" />;
+  const n = (v: number, word: string) => `${v} ${word}${v === 1 ? "" : "s"}`;
+  return (
+    <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><FileSpreadsheet className="size-4" />Import research workbook</CardTitle>
+          <CardDescription>Upload the team&apos;s &ldquo;Admissions Intelligence&rdquo; Excel file. Use the newest file — it includes all earlier batches. Re-importing is safe: unchanged institutions are skipped.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          <Field label="Workbook (.xlsx)" htmlFor="wb-file">
+            <Input id="wb-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              onChange={(e) => { setFile(e.target.files?.[0] ?? null); setReport(null); }} />
+          </Field>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => run(true)} disabled={!file || busy}>Preview</Button>
+            <Button onClick={() => run(false)} disabled={!file || busy || !report || !report.dry_run}><Upload />Import</Button>
+          </div>
+          <ul className="grid gap-1 text-xs text-muted-foreground">
+            <li>Every university on the master list becomes an institution; researched ones also get a lead and a research result to review.</li>
+            <li>Emails are kept only where the workbook says VERIFIED, and are marked &ldquo;published&rdquo;, not &ldquo;deliverable&rdquo;.</li>
+            <li>Phones marked UNVERIFIED or DO NOT USE are dropped. People with conflicting names are listed for checking, not created.</li>
+            <li>Nothing becomes a contact or a finding until someone approves it on the research result.</li>
+          </ul>
+        </CardContent>
+      </Card>
+      {report && (
+        <Card className="xl:col-span-2">
+          <CardHeader>
+            <CardTitle>{report.dry_run ? "Preview — nothing saved yet" : "Imported"}</CardTitle>
+            <CardDescription>{report.file}{report.research_date ? ` · research dated ${report.research_date}` : ""}</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 text-sm">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <Stat title="Institutions" value={report.institutions_created} sub={`new · ${report.institutions_updated} updated · ${report.institutions_unchanged} unchanged`} />
+              <Stat title="Research results" value={report.results_created} sub={`${report.results_unchanged} unchanged, skipped`} />
+              <Stat title="People to review" value={report.people} sub={`${report.emails_kept} with a published email`} />
+              <Stat title="New leads" value={report.leads_created} sub={`${n(report.evidence, "finding")} to review`} />
+            </div>
+            {(report.emails_dropped > 0 || report.phones_dropped > 0) && (
+              <p className="text-muted-foreground">Not imported: {n(report.emails_dropped, "unverified email")} and {n(report.phones_dropped, "flagged phone number")} (kept in the person&apos;s notes for reference).</p>
+            )}
+            {report.warnings.length > 0 && (
+              <div><div className="mb-1 font-medium">Notes</div><ul className="grid list-disc gap-0.5 pl-5 text-muted-foreground">{report.warnings.map((w) => <li key={w}>{w}</li>)}</ul></div>
+            )}
+            {report.people_not_imported.length > 0 && (
+              <details><summary className="cursor-pointer font-medium">{n(report.people_not_imported.length, "row")} not turned into people</summary>
+                <ul className="mt-1 grid list-disc gap-0.5 pl-5 text-xs text-muted-foreground">{report.people_not_imported.map((w) => <li key={w}>{w}</li>)}</ul>
+              </details>
+            )}
+            {!report.dry_run && report.results_created > 0 && <Button asChild variant="outline" className="justify-self-start"><Link href="/research?tab=results">Review results</Link></Button>}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 export default function ResearchPage() {
   const toast = useToast();
   const [key, setKey] = useState(0);
@@ -234,10 +312,11 @@ export default function ResearchPage() {
         </div>
       )}
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="mb-4"><TabsTrigger value="results">Results</TabsTrigger><TabsTrigger value="jobs">Jobs & queue</TabsTrigger><TabsTrigger value="scoring">Scoring</TabsTrigger></TabsList>
+        <TabsList className="mb-4"><TabsTrigger value="results">Results</TabsTrigger><TabsTrigger value="jobs">Jobs & queue</TabsTrigger><TabsTrigger value="scoring">Scoring</TabsTrigger><TabsTrigger value="import">Import workbook</TabsTrigger></TabsList>
         <TabsContent value="results" className="mt-0"><Results refreshKey={key} /></TabsContent>
         <TabsContent value="jobs" className="mt-0"><Jobs refreshKey={key} /></TabsContent>
         <TabsContent value="scoring" className="mt-0"><Scoring /></TabsContent>
+        <TabsContent value="import" className="mt-0"><WorkbookImport onDone={() => { setKey((k) => k + 1); mutate(); }} /></TabsContent>
       </Tabs>
     </>
   );

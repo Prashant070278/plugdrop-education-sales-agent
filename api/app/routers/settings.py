@@ -60,10 +60,13 @@ def system(_: CurrentUser, db: DB) -> SystemInfo:
     integrations = [
         Integration(
             key="email",
-            name="Email (SMTP)",
-            description="Send outreach emails and reminders.",
-            status=st(s.smtp_host, s.smtp_user, s.smtp_password),
-            env_vars=["SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"],
+            name="Email mailboxes (Gmail / Microsoft 365)",
+            description=(
+                "OAuth sign-in for outreach mailboxes (Settings → Outreach). "
+                + ("External sending is ON." if s.outreach_external_sending_allowed else "External sending is OFF: drafts only.")
+            ),
+            status="connected" if s.token_encryption_key and (s.google_client_id or s.microsoft_client_id) else "not_configured",
+            env_vars=["TOKEN_ENCRYPTION_KEY", "GOOGLE_CLIENT_ID", "MICROSOFT_CLIENT_ID", "OUTREACH_EXTERNAL_SENDING_ALLOWED"],
         ),
         Integration(
             key="voice",
@@ -116,6 +119,11 @@ def system(_: CurrentUser, db: DB) -> SystemInfo:
 def purge_demo(user: AdminUser, db: DB, request: Request) -> dict[str, int]:
     """Delete every row flagged is_demo. Order respects foreign keys."""
     removed: dict[str, int] = {}
+    from app.models import ContentItem, EmailTemplate, OutreachSequence
+
+    for m in (OutreachSequence, ContentItem, EmailTemplate):
+        res0 = db.execute(delete(m).where(m.is_demo.is_(True)))
+        removed[m.__tablename__] = res0.rowcount or 0
     for key in [
         "activities",
         "research_findings",

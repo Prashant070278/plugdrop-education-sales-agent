@@ -706,6 +706,7 @@ def push(db: Session, run: ResearchRun, user: User) -> dict[str, Any]:
             continue
         contact = Contact(
             institution_id=inst.id,
+            salutation=c.salutation,
             first_name=c.first_name,
             last_name=c.last_name,
             designation=c.designation,
@@ -716,6 +717,7 @@ def push(db: Session, run: ResearchRun, user: User) -> dict[str, Any]:
             verification_status=c.verification_status,
             source=f"Research agent ({c.provider}): {c.source_url}"[:200],
             last_verified_at=c.retrieved_at if c.verification_status == "verified" else None,
+            notes=c.notes,
             is_demo=inst.is_demo,
         )
         db.add(contact)

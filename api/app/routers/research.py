@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -18,7 +18,7 @@ from app.models import (
     Role,
     RunStatus,
 )
-from app.research import service
+from app.research import service, workbook
 from app.research.reasoning import SIGNAL_CATEGORIES, USE_CASES
 from app.research.scoring import ROLE_LABELS
 from app.schemas import UserRef
@@ -102,6 +102,7 @@ class EvidenceOut(ORM):
 
 class CandidateOut(ORM):
     id: int
+    salutation: str | None = None
     first_name: str
     last_name: str
     full_name: str
@@ -399,3 +400,24 @@ def review_run(run_id: int, body: ReviewIn, user: CurrentUser, db: DB) -> RunDet
 @router.post("/runs/{run_id}/push")
 def push_run(run_id: int, user: CurrentUser, db: DB) -> dict[str, Any]:
     return service.push(db, _load_run(db, run_id), user)
+
+
+@router.post("/import-workbook")
+async def import_workbook(user: ManagerUser, db: DB, file: UploadFile = File(...), dry_run: bool = Query(True)) -> dict[str, Any]:
+    """Import a PlugDrop Admissions Intelligence workbook (.xlsx). dry_run=true previews without saving."""
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(422, "Upload the research workbook as an .xlsx file")
+    raw = await file.read(workbook.MAX_BYTES + 1)
+    if len(raw) > workbook.MAX_BYTES:
+        raise HTTPException(413, "Workbook must be 15 MB or smaller")
+    try:
+        rep = workbook.import_workbook(db, user, raw, file.filename or "workbook.xlsx", dry_run=dry_run)
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(422, str(e)) from e
+    except Exception as e:  # corrupt or non-Excel file
+        db.rollback()
+        if e.__class__.__module__.startswith(("zipfile", "openpyxl")) or "zip" in str(e).lower():
+            raise HTTPException(422, "Could not read this file as an Excel workbook") from e
+        raise
+    return rep.as_dict()
