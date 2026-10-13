@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import {
-  LayoutDashboard, Building2, Users, KanbanSquare, Briefcase, CheckSquare, Settings, LogOut, Menu, X,
+  LayoutDashboard, Building2, Users, KanbanSquare, Briefcase, CheckSquare, Settings, LogOut, Menu, X, Microscope,
 } from "lucide-react";
 import { Wordmark } from "@/components/brand";
 import { AuthProvider, useUser } from "@/components/auth";
@@ -15,6 +15,7 @@ const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/institutions", label: "Institutions", icon: Building2 },
   { href: "/contacts", label: "Contacts", icon: Users },
+  { href: "/research", label: "Research", icon: Microscope },
   { href: "/leads", label: "Lead pipeline", icon: KanbanSquare },
   { href: "/opportunities", label: "Opportunities", icon: Briefcase },
   { href: "/tasks", label: "Tasks", icon: CheckSquare },

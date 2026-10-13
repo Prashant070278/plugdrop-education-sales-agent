@@ -88,10 +88,21 @@ def system(_: CurrentUser, db: DB) -> SystemInfo:
         ),
         Integration(
             key="research",
-            name="Research agent",
-            description="Automated institution research (Stage 2).",
-            status="planned",
-            env_vars=[],
+            name=f"Research source: {s.research_provider}",
+            description=(
+                "Fictional demo data for .example institutions only. Add a licensed provider for real prospects."
+                if s.research_provider == "mock"
+                else "Licensed research data provider."
+            ),
+            status="connected",
+            env_vars=["RESEARCH_PROVIDER"],
+        ),
+        Integration(
+            key="claude",
+            name="Claude API (research reasoning)",
+            description="Summarises and classifies retrieved sources. Without a key, rule-based reasoning is used.",
+            status=st(s.anthropic_api_key),
+            env_vars=["ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"],
         ),
     ]
     db_name = s.database_url.rsplit("/", 1)[-1].split("?")[0]

@@ -5,6 +5,9 @@ os.environ.setdefault(
     os.environ.get("TEST_DATABASE_URL", "postgresql+psycopg://plugdrop:plugdrop@localhost:5432/plugdrop_test"),
 )
 os.environ.setdefault("JWT_SECRET", "test-secret-test-secret-test-secret")
+os.environ["RESEARCH_WORKER"] = "off"  # tests drive the queue explicitly
+os.environ["RESEARCH_REASONER"] = "rules"
+os.environ.pop("ANTHROPIC_API_KEY", None)
 
 from collections.abc import Iterator  # noqa: E402
 

@@ -137,7 +137,7 @@ Import limits: UTF-8, 5 MB, 5,000 rows. Every import is a dry run first and repo
 
 ```bash
 cd api
-pytest                 # 40 tests against a real Postgres (plugdrop_test; override with TEST_DATABASE_URL)
+pytest                 # 69 tests against a real Postgres (plugdrop_test; override with TEST_DATABASE_URL)
 ruff check app tests
 mypy app
 
@@ -161,6 +161,56 @@ GitHub Actions (`.github/workflows/ci.yml`) runs everything above on every push 
 6. **Contacts → Import CSV:** upload a file with one new row, one duplicate email and one unknown institution. The check reports 1 / 1 / 1.
 7. Sign in as `rep@plugdrop.example`. There's no delete button on institutions, and Settings has no Users or Audit log tabs.
 
+## Stage 2: AI prospect research agent
+
+The agent researches an institution from **cited sources**, proposes findings and decision-makers, and scores the prospect out of 100 with an explanation for every point. A person reviews the result, and only approved items go into the CRM. No outreach is sent.
+
+**How it works**
+
+1. **Queue.** On **Institutions**, tick one or more rows and choose **Research selected**. Or open an institution and click **Research now**. Each institution becomes one *run* inside a *job*.
+2. **Retrieve.** A worker takes the run and asks the configured **research source provider** for the official profile, source documents (official pages, press releases, job postings, news) and people. Providers are swappable (`app/research/providers/`). The built-in `mock` provider returns fictional data, and only for `.example` demo institutions.
+3. **Reason.** Claude (when `ANTHROPIC_API_KEY` is set) or a rule-based reasoner reads **only the retrieved documents** and classifies each finding:
+   - **Verified fact:** stated directly in the source. The quoted excerpt is checked against the source text, and a quote that isn't there is downgraded.
+   - **Source-supported inference:** a reasonable inference from a cited source. News and forums count here unless the institution itself says it.
+   - **Hypothesis:** no supporting source. Shown for follow-up, never scored, and can't be approved.
+4. **Score.** Deterministic, with no AI involved. Each part is weighted (configurable): Institution fit 25, Business problem 25, Intent/timing 20, Decision-maker access 15, Evidence quality and freshness 15. Missing information scores zero. Inferences count less than verified facts. Evidence loses value with age (full value up to 180 days, discounted after, heavily after 365) and when its confidence is weak. Tiers: A ≥ 75, B ≥ 55, C ≥ 35, D below 35.
+5. **Review.** **Research → Review** shows the score with reasons, why the institution fits, the most relevant use case, the recommended next action, missing information and how to verify it, decision-makers with their email status, and every piece of evidence with its source link, quote, publication date and retrieval date. Approve or reject each item.
+6. **Push.** **Push to CRM** writes the approved evidence as research findings (keeping the evidence level, quote and dates) and the approved people as contacts. It links people already in the CRM instead of duplicating them, skips anyone opted out or suppressed, and updates the open lead's score. Everything is written to the audit log and the timeline.
+7. **Re-run.** A result older than 90 days (configurable) is *stale*. **Research → Re-run stale** queues those institutions again, and the newest result replaces the old one.
+
+**Contact data rules (enforced in code)**
+
+- An email is kept only if it appears on the cited page or a licensed provider reports it as verified.
+- Pattern-guessed emails are discarded, and the reason is shown.
+- The AI step can't add emails or phone numbers.
+- A contact is marked *verified* only when a provider verified it.
+- Every person and finding keeps its source link.
+
+**Reliability and cost**
+
+| Concern | How it's handled |
+|---|---|
+| Status | Job: queued → running → completed / partial / failed / cancelled. Run: queued → running → succeeded / failed / cancelled |
+| Retries | Temporary errors (timeouts, rate limits, Claude 429/5xx/529) retry with doubling back-off, up to 3 attempts. Permanent errors (access not permitted, 4xx) fail at once. Failed runs can be retried from the Jobs view. |
+| Rate limits | Per-provider limit, default 30 calls a minute |
+| Cost | Provider cost plus Claude tokens × your configured price, stored per run and per job. A daily budget (default $5) defers further work to the next day. |
+| Logging | Each run keeps a step-by-step log (provider calls, AI tokens, retries, errors), shown on the review page |
+| Failure isolation | A crash on one institution never stops the worker. Nothing from a failed attempt is saved. |
+| Worker | Runs inside the API by default (`RESEARCH_WORKER=embedded`). For a separate process, set `external` and run `python -m app.research.worker` (or `docker compose --profile worker up -d`). Several workers can run safely at once. |
+
+**Settings** are listed in `.env.example` under Stage 2. Managers can change weights, tiers and freshness on **Research → Scoring**. Saving re-scores the latest results immediately.
+
+**Adding a real provider.** Implement `ResearchProvider.research(...)` in `app/research/providers/`, call `register_provider("name", Factory)`, and set `RESEARCH_PROVIDER=name`. Only use official APIs, licensed data, or pages whose terms permit automated access. Never bypass logins, paywalls or robots rules.
+
+## How to verify Stage 2 by hand
+
+1. Sign in as `rep@plugdrop.example`. On **Institutions**, tick five demo institutions and choose **Research selected**. The **Jobs & queue** tab shows progress until the job is Completed.
+2. On **Research → Results**, scores range across tiers. Open **Review** on one.
+3. Check that every non-hypothesis item has a source link, quote and dates, that the hypothesis **Approve** button is disabled, and that guessed emails show "discarded".
+4. Click **Approve all verified facts**, approve one person, then **Push to CRM**. The institution's Research tab now lists those findings with their evidence level, and the person appears in Contacts with source "Research agent".
+5. Sign in as `manager@plugdrop.example`. On **Research → Scoring**, change a weight and save. The scores update.
+6. Create an institution with website `https://flaky-test.example` and research it: it fails once, then succeeds on retry. With `https://blocked-test.example` it fails permanently, and the job shows *Partial* with a **Retry** button.
+
 ## Deployment
 
 1. Provision PostgreSQL 16 and set `DATABASE_URL`.
@@ -176,20 +226,14 @@ GitHub Actions (`.github/workflows/ci.yml`) runs everything above on every push 
 - Honour opt-outs. The API enforces them, so they apply even to scripts and integrations.
 - Demo data is fictional. Don't add real prospect data to the demo seed.
 
-## Not in Stage 1
+## Not built yet
 
-These are planned for Stage 2 and not built yet:
-
-- the automated research agent
-- sending email or WhatsApp from the app
-- placing Voice AI calls
+- outreach automation: sending email or WhatsApp, placing Voice AI calls (Stage 3)
+- a licensed real-world research provider (the provider interface is ready; only the fictional mock is included)
 - calendar booking
 - email reminders for due tasks (reminders show in the app only)
-- password reset
-- SSO
+- password reset and SSO
 - per-record access restrictions (all signed-in users can see all records)
-
-Settings → Integrations shows each of these as not configured or planned.
 
 ## Repository layout
 
@@ -198,6 +242,7 @@ api/                FastAPI app, Alembic migrations, tests, seed
   app/models.py     schema
   app/routers/      one module per resource
   app/services.py   duplicate detection, suppression, lookups
+  app/research/     Stage 2: providers, reasoning (Claude/rules), scoring, job service, worker
 web/                Next.js app
   src/app/(app)/    pages (dashboard, institutions, contacts, leads, opportunities, tasks, settings)
   src/components/   UI kit (shadcn-style), forms, timeline, app shell

@@ -234,6 +234,10 @@ class Institution(TimestampMixin, Base):
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Latest automated research result (Stage 2); detail lives in research_runs.
+    research_score: Mapped[int | None] = mapped_column(Integer)
+    research_tier: Mapped[str | None] = mapped_column(String(1))
+    last_researched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     campuses: Mapped[list[Campus]] = relationship(back_populates="institution", cascade="all, delete-orphan")
     contacts: Mapped[list[Contact]] = relationship(back_populates="institution")
@@ -387,6 +391,12 @@ class ResearchFinding(TimestampMixin, Base):
     found_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Set when the finding came from an approved research-agent evidence item (Stage 2).
+    evidence_level: Mapped[str | None] = mapped_column(String(30))
+    excerpt: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    research_evidence_id: Mapped[int | None] = mapped_column(ForeignKey("research_evidence.id", ondelete="SET NULL"), unique=True)
 
 
 class Task(TimestampMixin, Base):
@@ -481,3 +491,207 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     actor: Mapped[User | None] = relationship()
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: AI prospect research agent
+# ---------------------------------------------------------------------------
+
+
+class JobStatus(StrEnum):
+    queued = "queued"
+    running = "running"
+    completed = "completed"
+    partial = "partial"  # finished, some items failed
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class RunStatus(StrEnum):
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class EvidenceLevel(StrEnum):
+    verified_fact = "verified_fact"  # stated directly in a retrieved source; excerpt checked against source text
+    source_inference = "source_inference"  # reasonable inference from a cited source
+    hypothesis = "hypothesis"  # not supported by a source; never scores
+
+
+class EvidenceKind(StrEnum):
+    profile = "profile"
+    signal = "signal"
+    use_case = "use_case"
+
+
+class ReviewStatus(StrEnum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+
+
+class EmailStatus(StrEnum):
+    none = "none"  # no email found
+    published = "published"  # shown on a cited public business page
+    provider_verified = "provider_verified"  # a licensed provider reports it as verified
+
+
+class ResearchJob(Base):
+    __tablename__ = "research_jobs"
+    __table_args__ = (_check("status", JobStatus), Index("ix_research_jobs_status_created", "status", "created_at"))
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=JobStatus.queued.value)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    reasoner: Mapped[str] = mapped_column(String(50), nullable=False)
+    requested_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    total_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=Decimal("0"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    requested_by: Mapped[User | None] = relationship()
+    runs: Mapped[list[ResearchRun]] = relationship(back_populates="job", order_by="ResearchRun.id")
+
+
+class ResearchRun(Base):
+    """One institution researched within a job. Holds status, retries, cost, log and the scored result."""
+
+    __tablename__ = "research_runs"
+    __table_args__ = (
+        _check("status", RunStatus),
+        CheckConstraint("tier IS NULL OR tier IN ('A', 'B', 'C', 'D')", name="tier_valid"),
+        CheckConstraint("score IS NULL OR score BETWEEN 0 AND 100", name="score_range"),
+        Index("ix_research_runs_queue", "status", "next_attempt_at"),
+        Index("ix_research_runs_institution_finished", "institution_id", "finished_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("research_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=RunStatus.queued.value)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=Decimal("0"))
+    log: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    # Result
+    score: Mapped[int | None] = mapped_column(Integer)
+    tier: Mapped[str | None] = mapped_column(String(1))
+    confidence: Mapped[str | None] = mapped_column(String(10))
+    score_breakdown: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    weights_used: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    job: Mapped[ResearchJob] = relationship(back_populates="runs")
+    institution: Mapped[Institution] = relationship()
+    evidence: Mapped[list[ResearchEvidence]] = relationship(back_populates="run", order_by="ResearchEvidence.id")
+    candidates: Mapped[list[ResearchContactCandidate]] = relationship(
+        back_populates="run", order_by="ResearchContactCandidate.id"
+    )
+
+
+class ResearchEvidence(Base):
+    __tablename__ = "research_evidence"
+    __table_args__ = (
+        _check("kind", EvidenceKind),
+        _check("evidence_level", EvidenceLevel),
+        _check("review_status", ReviewStatus),
+        CheckConstraint("confidence BETWEEN 0 AND 100", name="confidence_range"),
+        CheckConstraint("evidence_level = 'hypothesis' OR source_url IS NOT NULL", name="sourced_unless_hypothesis"),
+        Index("ix_research_evidence_run", "run_id"),
+        Index("ix_research_evidence_institution", "institution_id", "review_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id", ondelete="CASCADE"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False)
+    claim: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_level: Mapped[str] = mapped_column(String(30), nullable=False)
+    confidence: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    excerpt: Mapped[str | None] = mapped_column(Text)
+    source_url: Mapped[str | None] = mapped_column(String(1000))
+    source_title: Mapped[str | None] = mapped_column(String(500))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    review_status: Mapped[str] = mapped_column(String(20), nullable=False, default=ReviewStatus.pending.value)
+    review_note: Mapped[str | None] = mapped_column(String(500))
+    reviewed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    run: Mapped[ResearchRun] = relationship(back_populates="evidence")
+    reviewed_by: Mapped[User | None] = relationship()
+
+
+class ResearchContactCandidate(Base):
+    """A person found by a provider. Never written to contacts until a human approves and pushes it."""
+
+    __tablename__ = "research_contact_candidates"
+    __table_args__ = (
+        _check("email_status", EmailStatus),
+        _check("verification_status", VerificationStatus),
+        _check("review_status", ReviewStatus),
+        CheckConstraint("email IS NULL OR email_status <> 'none'", name="email_has_status"),
+        CheckConstraint("source_url IS NOT NULL", name="has_source"),
+        Index("ix_research_candidates_run", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("research_runs.id", ondelete="CASCADE"), nullable=False)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id", ondelete="CASCADE"), nullable=False)
+    first_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    last_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    designation: Mapped[str | None] = mapped_column(String(200))
+    department: Mapped[str | None] = mapped_column(String(200))
+    buying_role: Mapped[str | None] = mapped_column(String(50))
+    email: Mapped[str | None] = mapped_column(String(254))
+    email_status: Mapped[str] = mapped_column(String(20), nullable=False, default=EmailStatus.none.value)
+    phone: Mapped[str | None] = mapped_column(String(50))
+    linkedin_url: Mapped[str | None] = mapped_column(String(500))
+    verification_status: Mapped[str] = mapped_column(String(20), nullable=False, default=VerificationStatus.unverified.value)
+    source_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    excerpt: Mapped[str | None] = mapped_column(Text)
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(500))
+    existing_contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
+    review_status: Mapped[str] = mapped_column(String(20), nullable=False, default=ReviewStatus.pending.value)
+    reviewed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pushed_contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"))
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    run: Mapped[ResearchRun] = relationship(back_populates="candidates")
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.first_name} {self.last_name}".strip()
+
+
+class AppSetting(Base):
+    """Small key/value store for configurable settings (e.g. research scoring weights)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

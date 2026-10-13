@@ -43,6 +43,8 @@ SORTABLE = {
     "created_at": Institution.created_at,
     "updated_at": Institution.updated_at,
     "last_verified_at": Institution.last_verified_at,
+    "research_score": Institution.research_score,
+    "last_researched_at": Institution.last_researched_at,
 }
 CSV_FIELDS = ["name", "website", "institution_type", "country", "city", "student_size_range", "courses", "source"]
 
@@ -98,6 +100,7 @@ def _filtered(
     student_size_range: StudentSize | None,
     owner_id: int | None,
     demo: bool | None,
+    tier: str | None = None,
 ) -> Any:
     stmt = select(Institution).options(selectinload(Institution.owner))
     stmt = apply_search(stmt, params.q, [Institution.name, Institution.city, Institution.country, Institution.domain])
@@ -111,6 +114,10 @@ def _filtered(
         stmt = stmt.where(Institution.owner_id == owner_id)
     if demo is not None:
         stmt = stmt.where(Institution.is_demo.is_(demo))
+    if tier == "none":
+        stmt = stmt.where(Institution.research_tier.is_(None))
+    elif tier:
+        stmt = stmt.where(Institution.research_tier == tier)
     return apply_sort(stmt, params.sort, SORTABLE, Institution.name.asc())
 
 
@@ -124,8 +131,9 @@ def list_institutions(
     student_size_range: StudentSize | None = None,
     owner_id: int | None = None,
     demo: bool | None = None,
+    tier: Annotated[str | None, Query(pattern="^(A|B|C|D|none)$")] = None,
 ) -> Page[InstitutionOut]:
-    stmt = _filtered(params, institution_type, country, student_size_range, owner_id, demo)
+    stmt = _filtered(params, institution_type, country, student_size_range, owner_id, demo, tier)
     items, total = paginate(db, stmt, params)
     return Page(items=enrich(db, items), total=total, page=params.page, page_size=params.page_size)
 

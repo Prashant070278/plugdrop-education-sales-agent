@@ -15,6 +15,8 @@ import {
 } from "@/components/common";
 import { ConsentDialog, ContactDialog, InstitutionDialog, LeadDialog, ResearchDialog } from "@/components/forms";
 import { AuditList, Timeline } from "@/components/timeline";
+import { ResearchCard } from "@/components/research-card";
+import { EvidenceLevelBadge } from "@/components/research";
 import { useCan } from "@/components/auth";
 import { useToast } from "@/components/toast";
 import { api, useApi } from "@/lib/api";
@@ -126,6 +128,8 @@ export default function InstitutionDetailPage({ params }: { params: Promise<{ id
                       <li key={r.id} className="rounded-lg border p-3 text-sm">
                         <div className="mb-1 flex items-center justify-between gap-2"><Badge variant="secondary">{r.category}</Badge><span className="text-xs text-muted-foreground">{date(r.found_at)} · confidence {r.confidence}%</span></div>
                         <p>{r.summary}</p>
+                        {r.excerpt && <blockquote className="mt-1 border-l-2 border-pdpurple/40 pl-2 text-xs italic text-muted-foreground">“{r.excerpt}”</blockquote>}
+                        {r.evidence_level && <div className="mt-1.5"><EvidenceLevelBadge level={r.evidence_level} /></div>}
                         {r.source_url && <a href={r.source_url} target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-xs text-primary hover:underline">Source</a>}
                       </li>
                     ))}
@@ -138,6 +142,7 @@ export default function InstitutionDetailPage({ params }: { params: Promise<{ id
         </div>
 
         <div className="grid min-w-0 grid-cols-1 content-start gap-6">
+          <ResearchCard institutionId={inst.id} onDone={() => { mutate(); mutAct(); mutResearch(); }} />
           <Card>
             <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
             <CardContent>
